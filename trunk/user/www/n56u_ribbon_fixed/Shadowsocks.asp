@@ -77,13 +77,24 @@
 			document.getElementById('s5_aut').value=0;
 			}
 			}); 
-			$j("#v2_tls").change(function() { 
+			$j("#v2_tls").change(function() {
 			if(document.getElementById('v2_tls').value != '0'){
 			showhide_div('row_tj_tls_host', 1);
-			}else{			
+			}else{
 			showhide_div('row_tj_tls_host', 0);
 			}
+			toggle_reality_rows();
 			});
+			// Reality 的四个字段只在「TLS/Reality」选 Reality（值为 2）时才有意义。
+			// 它们是 xray 的硬性要求，缺任何一项整份配置都加载不了，
+			// 所以只在真用得上的时候显示，避免在别的协议下被误填
+			function toggle_reality_rows() {
+			var on = (document.getElementById('v2_tls').value == '2') ? 1 : 0;
+			showhide_div('row_v2_reality_pbk', on);
+			showhide_div('row_v2_reality_sid', on);
+			showhide_div('row_v2_reality_fp', on);
+			showhide_div('row_v2_reality_spx', on);
+			}
 			$j("#v2_mux").change(function() { 
 			if($j("#v2_mux").is(':checked')){
 			document.getElementById('v2_mux').value=1;
@@ -226,6 +237,10 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			showhide_div('row_v2_security', 0);
 			showhide_div('row_v2_tls', 0);
 			showhide_div('row_v2_flow', 0);
+			showhide_div('row_v2_reality_pbk', 0);
+			showhide_div('row_v2_reality_sid', 0);
+			showhide_div('row_v2_reality_fp', 0);
+			showhide_div('row_v2_reality_spx', 0);
 			showhide_div('row_v2_type_tcp', 0);
 			showhide_div('row_v2_type', 0);
 			showhide_div('row_v2_vid', 0);
@@ -271,6 +286,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				showhide_div('row_v2_mux', 1);
 				showhide_div('row_tj_tls_host', 1);
 				showhide_div('row_ssp_insecure', 1);
+				toggle_reality_rows();
 			} else if (b == "socks5") {
 				showhide_div('row_s5_enable', 1);
 				showhide_div('row_s5_username', 1);
@@ -811,6 +827,12 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				document.getElementById("v2_flow").value = getProperty(ss, 'flow', '0');
 				//document.getElementById("v2_tls").checked =  document.getElementById("v2_tls").value != 0;
 				document.getElementById("ssp_tls_host").value = getProperty(ss, 'tls_host', '');
+				document.getElementById("v2_reality_pbk").value = getProperty(ss, 'reality_public_key', '');
+				document.getElementById("v2_reality_sid").value = getProperty(ss, 'reality_short_id', '');
+				document.getElementById("v2_reality_fp").value = getProperty(ss, 'reality_fingerprint', 'chrome');
+				document.getElementById("v2_reality_spx").value = getProperty(ss, 'reality_spider_x', '');
+				// 回填完才知道要不要显示：这几个字段的可见性取决于 v2_tls 的值
+				toggle_reality_rows();
 				if (transport == "kcp") {
 					document.getElementById("v2_kcp_guise").value = getProperty(ss, 'kcp_guise', 'none');
 					document.getElementById("v2_mtu").value = getProperty(ss, 'mtu', '');
@@ -1302,6 +1324,14 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 					document.getElementById('ssp_insecure').value = 0;
 					document.getElementById('ssp_insecure').checked = false;
 					document.getElementById('ssp_tls_host').value = queryParam.sni || serverPart[0];
+					// 链接里的 pbk / sid / fp / spx 就是 xray 要的
+					// publicKey / shortId / fingerprint / spiderX。
+					// 不带过来的话导入完还得手抄一遍，漏一个 xray 就起不来
+					document.getElementById('v2_reality_pbk').value = queryParam.pbk || '';
+					document.getElementById('v2_reality_sid').value = queryParam.sid || '';
+					document.getElementById('v2_reality_fp').value = queryParam.fp || 'chrome';
+					document.getElementById('v2_reality_spx').value = queryParam.spx || '/';
+					toggle_reality_rows();
 				}
 				s.innerHTML = "<font color='green'>导入Xray配置信息成功</font>";
 				return false;
@@ -1420,6 +1450,11 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 					tls: document.getElementById("v2_tls").value,
 					flow: document.getElementById("v2_flow").value,
 					tls_host: document.getElementById("ssp_tls_host").value,
+					reality_public_key: document.getElementById("v2_reality_pbk").value,
+					reality_short_id: document.getElementById("v2_reality_sid").value,
+					reality_fingerprint: document.getElementById("v2_reality_fp").value || 'chrome',
+					// spiderX 留空时 xray 收到空串会走它自己的默认值，但显式给 / 更稳
+					reality_spider_x: document.getElementById("v2_reality_spx").value || '/',
 					coustom: "1",
 				}
 				if (document.getElementById("v2_transport").value == "kcp") {
@@ -2236,6 +2271,48 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 															<th width="50%">TLS Host</th>
 															<td>
 																<input type="text" class="input" size="15" name="ssp_tls_host" id="ssp_tls_host" style="width: 200px" value="">
+															</td>
+														</tr>
+														<tr id="row_v2_reality_pbk" style="display:none;">
+															<th width="50%">Reality 公钥</th>
+															<td>
+																<input type="text" class="input" size="15" name="v2_reality_pbk" id="v2_reality_pbk" style="width: 200px" value="">
+																<div style="font-size:12px; color:#999; margin-top:2px;">
+																	以下四项只在「TLS/Reality」选 <b>Reality</b> 时才需要填。<br>
+																	公钥（publicKey）和 Short ID 由服务端提供。<br>
+																	<b>少填任何一项 xray 都会拒绝启动</b>，表现是整个科学上网不通，排查时很难指向这里。<br>
+																	从分享链接导入时会自动带上，手填的话照着服务端抄。
+																</div>
+															</td>
+														</tr>
+														<tr id="row_v2_reality_sid" style="display:none;">
+															<th width="50%">Reality Short ID</th>
+															<td>
+																<input type="text" class="input" size="15" name="v2_reality_sid" id="v2_reality_sid" style="width: 200px" value="">
+															</td>
+														</tr>
+														<tr id="row_v2_reality_fp" style="display:none;">
+															<th width="50%">Reality 指纹</th>
+															<td>
+																<select name="v2_reality_fp" id="v2_reality_fp" class="input" style="width: 200px;">
+																	<option value="chrome">chrome</option>
+																	<option value="firefox">firefox</option>
+																	<option value="safari">safari</option>
+																	<option value="ios">ios</option>
+																	<option value="android">android</option>
+																	<option value="edge">edge</option>
+																	<option value="360">360</option>
+																	<option value="qq">qq</option>
+																	<option value="random">random</option>
+																	<option value="randomized">randomized</option>
+																</select>
+															</td>
+														</tr>
+														<tr id="row_v2_reality_spx" style="display:none;">
+															<th width="50%">Reality SpiderX</th>
+															<td>
+																<input type="text" class="input" size="15" name="v2_reality_spx" id="v2_reality_spx" style="width: 200px" value="" placeholder="/">
+																<div style="font-size:12px; color:#999; margin-top:2px;">留空按 / 处理。</div>
 															</td>
 														</tr>
 														<tr id="row_v2_mux" style="display:none;">

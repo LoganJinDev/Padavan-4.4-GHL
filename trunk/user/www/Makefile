@@ -7,7 +7,7 @@ ROMFS_DIR = $(ROOTDIR)/romfs
 include $(BOARD_CONFIG)
 
 PROJECT_HOME_URL="https:\/\/github.com\/hanwckf\/padavan-4.4\/"
-PROJECT_HOME_URL_MOD="https:\/\/github.com\/TurBoTse\/padavan\/"
+PROJECT_HOME_URL_MOD="https:\/\/github.com\/LoganJinDev\/Padavan-4.4-GHL\/"
 
 LABEL_COPYRIGHT_TEXT="© 2011-`date +'%Y'` Padavan \& N56U Project Community \, Compilation Time: `TZ='Asia/Shanghai' date +'%Y.%m.%d %H:%M:%S'`"
 
@@ -161,6 +161,12 @@ ifneq ($(CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS),y)
 	rm -f $(INSTALLDIR)/www/Shadowsocks.asp
 	rm -f $(INSTALLDIR)/www/Shadowsocks_action.asp
 	rm -f $(INSTALLDIR)/www/Shadowsocks_log.asp
+	rm -f $(INSTALLDIR)/www/Shadowsocks_Route.asp
+	rm -f $(INSTALLDIR)/www/Shadowsocks_RuleEdit.asp
+	rm -f $(INSTALLDIR)/www/Shadowsocks_ACL.asp
+	rm -f $(INSTALLDIR)/www/Shadowsocks_ACL_Edit.asp
+	rm -f $(INSTALLDIR)/www/Shadowsocks_GeoView.asp
+	rm -f $(INSTALLDIR)/www/xrayroute.js
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_ADBYBY),y)
 	rm -f $(INSTALLDIR)/www/Advanced_adbyby.asp
