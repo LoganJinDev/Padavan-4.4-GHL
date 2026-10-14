@@ -1023,6 +1023,12 @@
 			{"sqm_eqdisc_opts", "", NULL, EVM_RESTART_SQM},
 			{"sqm_tcMPU", "", NULL, EVM_RESTART_SQM},
 			{"sqm_script", "", NULL, EVM_RESTART_SQM},
+			/* 按设备限速的规则表。声明成 File 后 applydb 会把它整份写进
+			 * /etc/storage/lanlimit.conf（nvram_dump 也按 scripts. 前缀直接读该文件
+			 * 回显），所以界面上看到的就是磁盘上那份。
+			 * 只带 EVM_BLOCK_UNSAFE，不挂任何 EVM_RESTART_* —— 生效由 web_ex.c
+			 * 写盘后直接调 lanlimit.sh reload 完成，不必重启别的服务 */
+			{"scripts.lanlimit.conf", "File", NULL, EVM_BLOCK_UNSAFE},
 			{0,0,0,0}
 		};
 #endif

@@ -16,6 +16,14 @@ if [ -x /etc/storage/ap_script.sh ]; then
 else
 	cp /usr/bin/ap_script.sh /etc/storage/ap_script.sh
 fi
+
+# 按设备限速。配置里没有有效条目时 lanlimit.sh 自己会跳过，不会多挂 qdisc，
+# 所以这里无条件调用即可。放在等外网之前，LAN 侧限速开机即刻生效
+if [ -f "/etc/storage/lanlimit.conf" ] ; then
+	logger -t "自动启动" "正在启动 按设备限速..."
+	/usr/bin/lanlimit.sh start
+fi
+
 smartdns_conf="/etc/storage/smartdns_custom.conf"
 dnsmasq_Conf="/etc/storage/dnsmasq/dnsmasq.conf"
 smartdns_Ini="/etc/storage/smartdns_conf.ini"

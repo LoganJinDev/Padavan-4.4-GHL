@@ -10,7 +10,7 @@ mkdir -p /tmp/frp
 cat > "/tmp/frp/myfrpc.ini" <<-\EOF
 # ==========客户端配置：==========
 [common]
-server_addr = 1192.0.0.3
+server_addr = 192.0.0.3
 server_port = 7000
 token = 12345
 
@@ -21,7 +21,7 @@ token = 12345
 [web]
 remote_port = 6000
 type = http
-local_ip = 192.168.2.1
+local_ip = 192.168.9.1
 local_port = 80
 subdomain = test
 #host_header_rewrite = 实际你内网访问的域名，可以供公网的域名不一致，如果一致可以不写

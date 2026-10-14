@@ -401,7 +401,7 @@ if (found_app_dnsforwarder()){
 	tabtitle[11] = new Array("", "<#menu5_1_1#>");
 }
 if (found_app_shadowsocks()){
-	tabtitle[12] = new Array("", "<#menu5_1_1#>","<#menu5_16_20#>");
+	tabtitle[12] = new Array("", "<#menu5_1_1#>","<#menu5_16_20#>","<#menu5_16_xray_route#>","<#menu5_16_xray_acl#>","<#menu5_16_xray_geo#>");
 }
 if (found_app_mentohust()){
 	tabtitle[13] = new Array("", "<#menu5_1_1#>","<#menu5_13_log#>");
@@ -447,7 +447,7 @@ if (found_app_dnsforwarder()){
 	tablink[11] = (dns_forwarder_array);
 }
 if (found_app_shadowsocks()){
-	shadowsocks_array = new Array("","Shadowsocks.asp","Shadowsocks_log.asp");
+	shadowsocks_array = new Array("","Shadowsocks.asp","Shadowsocks_log.asp","Shadowsocks_Route.asp","Shadowsocks_ACL.asp","Shadowsocks_GeoView.asp");
 	tablink[12] = (shadowsocks_array);
 }
 if (found_app_mentohust()){

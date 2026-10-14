@@ -43,6 +43,15 @@ var $j = jQuery.noConflict();
             show_footer();
             fill_sqm_status(sqm_status());
             showTab(getHash());
+            /* 按设备限速的规则表是 scripts.* 文件，非安全来源（非 LAN/VPN）不允许写，
+             * 这里同步把它置灰，免得用户改完才发现保存不了。与 Advanced_frp.asp /
+             * Advanced_adbyby.asp 的写法一致 */
+            if (!login_safe())
+                inputCtrl(document.form['scripts.lanlimit.conf'], 0);
+        }
+
+        function textarea_scripts_enabled(v) {
+            inputCtrl(document.form['scripts.lanlimit.conf'], v);
         }
 
         function applyRule() {
@@ -286,6 +295,33 @@ function getHash(){
                                                 </td>
                                             </tr>
                 </table>
+
+                                        <!-- ===== 按设备限速（lanlimit.sh）=====
+                                             规则表存成 /etc/storage/lanlimit.conf，改用下面的 textarea 编辑；
+                                             点页面底部的「应用」由 applydb 写盘，服务端写完立刻 reload tc 规则 -->
+                                        <table width="100%" align="center" cellpadding="4" cellspacing="0" class="table" style="margin-top: 10px;">
+                                            <tr>
+                                                <th width="30%">按设备限速</th>
+                                                <td colspan="2">
+                                                    <span style="color:#666;">
+                                                        每行一台设备，三个字段：<b>目标</b> <b>下行kbit</b> <b>上行kbit</b>，填 <b>0</b> 表示该方向不限。目标填 IP 或 MAC 均可，空格分隔。
+                                                    </span>
+                                                    <a href="javascript:spoiler_toggle('lanlimit_tip')"><i class="icon-hand-right"></i> 说明与示例</a>
+                                                    <div id="lanlimit_tip" style="display:none; margin-top:8px; color:#666; line-height:1.8;">
+                                                        · 下行 5M / 上行 1M：<code>192.168.9.100&nbsp;&nbsp;&nbsp;5120&nbsp;&nbsp;&nbsp;1024</code><br/>
+                                                        · 只限上传 512k，按 MAC：<code>A4:5E:60:11:22:33&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;512</code><br/>
+                                                        · <code>#</code> 开头是注释，空行忽略<br/>
+                                                        · MAC 在应用时通过 DHCP 租约表 / ARP 表解析成当前 IP；设备不在线则本次跳过，等它上线后再点一次「应用」即可<br/>
+                                                        · <b>要稳定生效必须关掉硬件加速</b>：把「外部网络(WAN) → 硬件加速」设为 <b>Disable</b>（等价 <code>nvram set hw_nat_mode=0</code>），SFE 同理（<code>nvram set sfe_enable=0</code>）。否则被硬件直通的长连接（下载、在线视频）不经过内核 qdisc，限速对它们无效。代价是转发性能下降<br/>
+                                                        · 这里与上面的 SQM 是两套独立机制，可以同时用：SQM 管整条线路，这里只管指定的单台设备
+                                                    </div>
+                                                    <br/>
+                                                    <textarea rows="12" wrap="off" spellcheck="false" maxlength="8192" class="span12" name="scripts.lanlimit.conf" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.lanlimit.conf",""); %></textarea>
+                                                    <span style="color:#888;">改完点页面底部的「应用」即保存并立即生效；重启后由 autostart.sh 自动恢复</span>
+                                                </td>
+                                            </tr>
+                                        </table>
+
                                    <table class="table">
                                             <tr>
                                                 <td colspan="3" style="border-top: 0 none;">

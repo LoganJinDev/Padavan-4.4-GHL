@@ -263,13 +263,23 @@ local function processData(szType, content)
 				result.flow = "0"
 			elseif params.security == "reality" or params.security == "2" then
 				result.tls = "2"
-				result.tls_host = params.host
+				-- REALITY 的 serverName 取自 sni。链接里同时有 host 时，host 通常是给
+				-- ws/http 用的 Host 头，拿它当 serverName 会握手失败，所以 sni 优先
+				result.tls_host = params.sni or params.host
 				result.insecure = 0
 				if params.flow == "xtls-rprx-vision" then
 					result.flow = "1"
 				else
 					result.flow = "2"
 				end
+				-- REALITY 客户端四件套。xray 对这四个字段是硬要求，少任何一个都会
+				-- 拒绝加载整份配置（表现是「科学上网整个不通」，很难指向这里）。
+				-- 分享链接里的参数名与配置里的字段名不同，在这里做映射：
+				--   pbk -> publicKey   sid -> shortId   fp -> fingerprint   spx -> spiderX
+				result.reality_public_key = params.pbk or ""
+				result.reality_short_id = params.sid or ""
+				result.reality_fingerprint = params.fp or "chrome"
+				result.reality_spider_x = params.spx or "/"
 			else
 				result.tls = "0"
 			end

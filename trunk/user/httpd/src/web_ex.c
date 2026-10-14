@@ -905,6 +905,13 @@ validate_asp_apply(webs_t wp, int sid)
 				{
 					doSystem("/etc/storage/ap_script.sh");
 				}
+				else if (!strcmp(file_name, "lanlimit.conf"))
+				{
+					/* 按设备限速：规则已写盘，就地重载 tc 规则。
+					 * 脚本自己会先清旧规则再重建，所以直接 reload 即可。
+					 * 放后台执行，避免拖住 httpd 的这次请求 */
+					doSystem("/usr/bin/lanlimit.sh reload >/dev/null 2>&1 &");
+				}
 			} else if (!strncmp(v->name, "crontab.", 8)) {
 				if (write_textarea_to_file(value, STORAGE_CRONTAB_DIR, nvram_safe_get("http_username")))
 					restart_needed_bits |= event_mask;
