@@ -25,6 +25,13 @@
 <script type="text/javascript" src="/help.js"></script>
 <script>
 var $j = jQuery.noConflict();
+/* login_safe() 是登录状态探针，由 login_state_hook() 现场吐出一个同名函数，
+ * 本页的 lanlimit_gate() 会调它判断会话来源是否安全。
+ * 这一行漏了的话 login_safe 就是未定义标识符 —— 而 lanlimit_gate 是 iToggle 的
+ * onClickOn 回调：engage.itoggle.min.js 在执行回调**之前**已把 clickEnabled 置 false，
+ * 只有 animate() 的完成回调才会把它复位。回调抛异常 -> animate 不跑 -> 复位不跑 ->
+ * 开关永久卡死，后续点击全被 clickEnabled 短路。所以这行必须在 <script> 最前面。 */
+<% login_state_hook(); %>
 <% sqm_status(); %>
         $j(document).ready(function () {
             // 第二个参数是切换总开关时的回调：按设备限速那一块的有效性跟着它走

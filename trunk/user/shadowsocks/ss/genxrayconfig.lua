@@ -66,7 +66,7 @@ local function build_inbound(fakedns_on)
 	}
 end
 
--- 按节点字段生成 vless 出站。字段映射沿用原实现，勿改
+-- 按节点字段生成 vmess 或 vless 出站。字段映射沿用原实现，勿改
 local function build_node_outbound(server, tag)
 	-- TLS / REALITY 两段先算好再塞进表里。直接写在表构造式里的话每段都是一串 and/or
 	-- 三元，把整个函数的圈复杂度顶到远超门禁（lizard 报 CCN 50+），拆出来既降复杂度也好读。
@@ -92,22 +92,37 @@ local function build_node_outbound(server, tag)
 		}
 	end
 
+	-- VMess 与 VLess 的 users 结构不同：VMess 认 alterId/security，VLess 认 flow/encryption/level。
+	-- 节点的 type 字段就是协议标识 —— 面板下拉框 value="v2ray" 显示 Vmess、value="xray" 显示 VLess，
+	-- 而 shadowsocks.sh 只按 type 挑配置生成器，所以这里必须跟着 type 分协议。
+	-- 不分的话 VMess 节点会被写成 vless 出站：JSON 合法、xray 也能加载，但协议对不上根本连不通，
+	-- 而且 vmess 的 flow 字段还会被 vless 分支错当 XTLS flow。
+	local is_vmess = (server.type == "v2ray")
+	local user_entry
+	if is_vmess then
+		user_entry = {
+			id = server.vmess_id,
+			alterId = tonumber(server.alter_id) or 0,
+			security = server.security or "auto"
+		}
+	else
+		user_entry = {
+			id = server.vmess_id,
+			flow = (server.flow == '1') and "xtls-rprx-vision" or ((server.flow == '2') and "xtls-rprx-vision-udp443" or ""),
+			level = tonumber(server.alter_id),
+			encryption = server.security
+		}
+	end
+
 	return {
-		protocol = "vless",
+		protocol = is_vmess and "vmess" or "vless",
 		tag = tag,
 		settings = {
 			vnext = {
 				{
 					address = server.server,
 					port = tonumber(server.server_port),
-					users = {
-						{
-							id = server.vmess_id,
-							flow = (server.flow == '1') and "xtls-rprx-vision" or ((server.flow == '2') and "xtls-rprx-vision-udp443" or ""),
-							level = tonumber(server.alter_id),
-							encryption = server.security
-						}
-					}
+					users = { user_entry }
 				}
 			}
 		},
@@ -119,7 +134,10 @@ local function build_node_outbound(server, tag)
 			realitySettings = reality_settings,
 			tcpSettings = (server.transport == "tcp" and server.tls ~= '2') and {
 				header = {
-					type = server.tcp_guise, -- 伪装
+					-- tcp_guise 可能为空（面板「TCP 伪装」没填时就是 nil）：cjson 会把它编成
+					-- "type":null 或整个键漏掉，xray 报 invalid TCP header config 直接拒载
+					-- 整份配置 —— 连分流带节点一起失效。兜底成 "none" 与 xray 默认语义一致。
+					type = server.tcp_guise or "none", -- 伪装
 					request = {
 						path = server.http_path or { "/" },
 						headers = {

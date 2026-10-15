@@ -87,7 +87,10 @@ function initial(){
                                     <table width="100%" cellpadding="4" cellspacing="0" class="table">
                                         <tr>
                                             <td colspan="3" style="border-top: 0 none; padding-bottom: 0px;">
-                                            <textarea rows="21" class="span12" style="height:377px; font-family:'Courier New', Courier, mono; font-size:13px;" readonly="readonly" wrap="off" id="textarea"><% nvram_dump("ss-watchcat.log",""); %></textarea>
+                                            <!-- 日志取自 /tmp/ssrplus.log —— ss-monitor 看门狗、以及各订阅/规则更新脚本都往这里写，
+     正是本页该展示的内容（web_ex.c:3554 负责在重载时清空它）。
+     原先是 ss-watchcat.log，全树没有任何写入者，所以这页永远空白。 -->
+<textarea rows="21" class="span12" style="height:377px; font-family:'Courier New', Courier, mono; font-size:13px;" readonly="readonly" wrap="off" id="textarea"><% nvram_dump("ssrplus.log",""); %></textarea>
                                             </td>
                                         </tr>
                                         <tr>
