@@ -135,7 +135,12 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 }
 		function initial() {
 			show_banner(2);
-			show_menu(13, 13, 0);
+			// show_menu(L1, L2, L3)：L1=主菜单下标，L2=二级菜单下标，L3=当前 tab 下标。
+			// tab 数组实际取 tabtitle[L2-1]，故 L2=13 对应 tabtitle[12]（科学上网 tab 组）。
+			// L3 是渲染开关而非“默认高亮”：L3 为 0/假值时整个 tab 条不渲染，
+			// 会导致 分流规则/访问控制/Geo查询 等子页面无入口，故必须传 1（本页=主要设置）。
+			// L1 原为 13，超出 menuL1_title 长度（有效 1..7），主菜单静默失去高亮，统一为 5。
+			show_menu(5, 13, 1);
 			show_footer();
 			fill_ss_status(shadowsocks_status());
 			fill_dns2tcp_status(dns2tcp_status());
