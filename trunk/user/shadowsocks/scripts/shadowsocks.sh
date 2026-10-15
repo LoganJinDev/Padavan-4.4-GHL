@@ -121,17 +121,10 @@ gen_config_file() {
 			sed -i 's/\\//g' /tmp/trojan-ssr-reudp.json
 		fi
 		;;
-	v2ray)
-		v2ray_enable=1
-		if [ "$2" = "1" ]; then
-			lua /etc_ro/ss/genv2config.lua $1 udp 1080 >/tmp/v2-ssr-reudp.json
-			sed -i 's/\\//g' /tmp/v2-ssr-reudp.json
-		else
-			lua /etc_ro/ss/genv2config.lua $1 tcp 1080 >$v2_json_file
-			sed -i 's/\\//g' $v2_json_file
-		fi
-		;;
-	xray)
+	v2ray|xray)
+		# 两种节点共用 genxrayconfig.lua：它按节点 type 字段自动分 vmess/vless 协议，
+		# 并且带 routing 段（分流规则）、ACL、FakeDNS、REALITY 支持。
+		# 旧版 genv2config.lua 不生成 routing，用它等于把分流规则整份丢掉 —— 已废弃。
 		v2ray_enable=1
 		if [ "$2" = "1" ]; then
 			lua /etc_ro/ss/genxrayconfig.lua $1 udp 1080 >/tmp/v2-ssr-reudp.json
@@ -140,7 +133,7 @@ gen_config_file() {
 			lua /etc_ro/ss/genxrayconfig.lua $1 tcp 1080 >$v2_json_file
 			sed -i 's/\\//g' $v2_json_file
 		fi
-		;;	
+		;;
 	esac
 }
 
@@ -457,13 +450,8 @@ start_local() {
 		run_bin $bin -c $CONFIG_SOCK5_FILE -u -f /var/run/ssr-local.pid
 		log "Global_Socks5:$name Started!"
 		;;
-	v2ray)
-		lua /etc_ro/ss/genv2config.lua $local_server tcp 0 $s5_port >/tmp/v2-ssr-local.json
-		sed -i 's/\\//g' /tmp/v2-ssr-local.json
-		run_bin $bin -config /tmp/v2-ssr-local.json
-		log "Global_Socks5:$($bin -version | head -1) Started!"
-		;;
-	xray)
+	v2ray|xray)
+		# 同 gen_config_file：两种节点共用 genxrayconfig.lua（按节点 type 自动分 vmess/vless）
 		lua /etc_ro/ss/genxrayconfig.lua $local_server tcp 0 $s5_port >/tmp/v2-ssr-local.json
 		sed -i 's/\\//g' /tmp/v2-ssr-local.json
 		run_bin $bin -config /tmp/v2-ssr-local.json
