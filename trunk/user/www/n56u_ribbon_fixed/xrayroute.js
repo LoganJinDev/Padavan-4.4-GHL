@@ -7,10 +7,13 @@
  *   执行命令  POST /apply.cgi            action_mode = ' SystemCmd '，值写进 httpd 的 SystemCmd 缓冲
  *
  * 为什么写值必须过 clean()：
- *   服务端 applydb_cgi 最后是 doSystem("dbus set %s='%s'", key, value)
- *   —— 值被包在 shell 单引号里。而 jQuery 1.x 的 $.param 内部用 encodeURIComponent，
- *   它不转义单引号。前端漏一个 ' 过去，后端就是引号断裂 + 命令注入。
- *   所以 clean() 放在 postPairs() 内部，任何页面都绕不过去。
+ *   写入通路（applydb_cgi）现在是 dbclient_bulk 按显式长度把键值直送 dbus 套接字，
+ *   值不过 shell —— 单引号既断不了命令，也注入不进去了。
+ *   （改之前那句 doSystem("dbus set %s='%s'", key, value) 才是那个注入面：
+ *   值被裹进 shell 单引号，而 jQuery 1.x 的 $.param 内部用 encodeURIComponent，
+ *   它不转义单引号，前端漏一个 ' 过去就是引号断裂 + 以 root 执行。）
+ *   但值得能原样读回来才算真存住，而读回路见下一段 —— 它同样把值嵌进 JS 单引号里。
+ *   所以 clean() 依然放在 postPairs() 内部，任何页面都绕不过去。
  *
  * 为什么读值也必须干净：
  *   服务端 db_print 是 websWrite("o[\"%s\"]='%s';", key, value)，原样嵌入 JS 单引号字符串。
@@ -304,17 +307,51 @@
 
 	// POST 后轮询 dbus 状态。
 	//
-	// 关于完成时机：/apply.cgi 的 SystemCmd 分支会 302 到 current_page，
-	// 而那个页面的 ASP 体 nvram_dump("syscmd.log","syscmd.sh") 会触发 httpd 真正
-	// 执行命令并等它结束。XHR 会跟随 302 并等完响应体 —— 所以 success 回调触发时
-	// 命令至少已经跑到 fork 点。异步命令（分类更新）之后靠轮询 xray_action_run 收尾。
+	// ⚠️ 命令到底什么时候被执行（动这里之前务必先读懂这段）：
 	//
-	// 这里刻意不复刻上游 getResponse() 那次额外 GET：它会让 sys_script 看到空的
-	// SystemCmd 从而执行 `echo -n > /tmp/syscmd.log` 把日志清掉（web_ex.c:153）。
-	// 结果走 dbus，不走那个日志。
+	//   /apply.cgi 的 ` SystemCmd ` 分支并**不**执行命令，它只是把命令拷进 httpd
+	//   的 static SystemCmd[128] 缓冲区，然后调 websRedirect(wp, current_url) 就
+	//   返回了（web_ex.c:3519 附近）。而 websRedirect（web_ex.c:128）写出来的是
+	//
+	//       HTTP 200 + <meta http-equiv="refresh" content="0; url=...">
+	//
+	//   —— 压根不是 302 Location 头。XHR 不解析 HTML、永远不会跟随 meta-refresh，
+	//   所以这次 POST 自己无法触发命令执行。
+	//
+	//   真正的「扳机」是取一次 /console_response.asp：那个页面的 ASP 体是
+	//   <% nvram_dump("syscmd.log","syscmd.sh"); %>，会走 ej_dump -> sys_script
+	//   （web_ex.c:677 和 151），只有在那里才 doSystem 执行 SystemCmd、等命令跑完、
+	//   再把 SystemCmd 清空。上游控制台页靠 hidden_frame 里渲染那个 meta-refresh
+	//   完成这一步；纯 XHR 必须自己补上这次 GET。缺了它命令就永远不执行，
+	//   界面上表现为一直「处理中」，最后没有任何输出（xray_action_* 也从不出现在
+	//   dbus 里）。
+	//
+	//   这次 GET 只能发一次：SystemCmd 已空时 sys_script 会执行
+	//   `echo -n > /tmp/syscmd.log` 把日志清掉（web_ex.c:153）。结果走 dbus 键，
+	//   不依赖那个日志文件，所以清掉无妨 —— 但多发无益。
+	//   又因为 httpd 是单进程 select 循环、doSystem 是阻塞的，这次 GET 的响应
+	//   一定在命令结束之后才回来，顺序是确定的。
 	function runCmd(cmd, onDone) {
 		post(' SystemCmd ', 'console_response.asp', { SystemCmd: cmd }, function () {
-			waitIdle(onDone);
+			// 这一步只为触发执行，不关心响应体，也不要 jQuery 去求值它
+			jtrigger('/console_response.asp', function () {
+				// 异步命令（分类更新等）之后靠轮询 xray_action_run 收尾
+				waitIdle(onDone);
+			});
+		});
+	}
+
+	// 只发一次「不解析响应」的 GET。用 dataType:text 而不是 script，避免把
+	// syscmd.log 里可能出现的命令输出当成 JS 去 eval；complete 保证成败都回调
+	function jtrigger(url, cb) {
+		J().ajax({
+			url: url + (url.indexOf('?') < 0 ? '?' : '&') + '_=' + (new Date()).getTime(),
+			type: 'get',
+			dataType: 'text',
+			cache: false,
+			complete: function () {
+				cb();
+			}
 		});
 	}
 

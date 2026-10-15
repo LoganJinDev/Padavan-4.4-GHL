@@ -870,6 +870,9 @@ struct nvram_pair router_defaults[] = {
 	{ "sqm_log_level", "5" },
 	{ "sqm_qdisc", "fq_codel" },
 	{ "sqm_script", "simple" },
+	/* 按设备限速：有规则时自动关掉硬件加速，否则被硬件直通的长连接绕过 qdisc 限不住。
+	 * 默认开；关掉则需用户自己去「外部网络(WAN) → 硬件加速」手动处理 */
+	{ "lanlimit_autohwnat", "1" },
 #endif
 
 	/* DHCP server parameters */

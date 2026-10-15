@@ -1023,6 +1023,13 @@
 			{"sqm_eqdisc_opts", "", NULL, EVM_RESTART_SQM},
 			{"sqm_tcMPU", "", NULL, EVM_RESTART_SQM},
 			{"sqm_script", "", NULL, EVM_RESTART_SQM},
+			/* 按设备限速时是否自动关闭硬件加速（hw_nat_mode / sfe_enable）。
+			 * 硬件直通会绕过内核 qdisc，被加速的长连接限不住，默认帮用户关掉。
+			 * 必须排在上面的 scripts.lanlimit.conf 之前：applydb 按表顺序处理，
+			 * 先把开关写进 nvram，随后处理 File 时 fork 出的 lanlimit.sh 才读得到新值
+			 * （nvram 是共享内存，父进程 set 完子进程立即可见）。
+			 * 自身不挂 EVM_RESTART_*，靠同一组里 File 变量顺带触发的 reload 生效 */
+			{"lanlimit_autohwnat", "", NULL, 0},
 			/* 按设备限速的规则表。声明成 File 后 applydb 会把它整份写进
 			 * /etc/storage/lanlimit.conf（nvram_dump 也按 scripts. 前缀直接读该文件
 			 * 回显），所以界面上看到的就是磁盘上那份。

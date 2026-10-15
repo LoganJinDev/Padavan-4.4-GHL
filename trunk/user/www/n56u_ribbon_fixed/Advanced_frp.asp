@@ -37,7 +37,10 @@ $j(document).ready(function() {
 
 function initial(){
 	show_banner(2);
-	show_menu(5,18);
+	// show_menu(L1, L2, L3)：L2 是左侧子菜单下标，要对着 menuL2_title 数。
+	// 该数组尾部依次 push：18=阿里云盘(aldriver)、19=SQM流控、20=frp内网穿透，
+	// 故 frp 必须是 20。原先写成 18，左侧「frp 内网穿透」不会被加粗高亮。
+	show_menu(5,20);
 	show_footer();
 
 fill_status(frpc_status());

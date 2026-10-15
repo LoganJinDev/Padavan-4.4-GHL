@@ -27,7 +27,8 @@
 var $j = jQuery.noConflict();
 <% sqm_status(); %>
         $j(document).ready(function () {
-            init_itoggle('sqm_enable');
+            // 第二个参数是切换总开关时的回调：按设备限速那一块的有效性跟着它走
+            init_itoggle('sqm_enable', lanlimit_gate);
             init_itoggle('sqm_active');
             init_itoggle('sqm_down_speed');
             init_itoggle('sqm_up_speed');
@@ -35,6 +36,7 @@ var $j = jQuery.noConflict();
             init_itoggle('sqm_log_level');
             init_itoggle('sqm_qdisc');
             init_itoggle('sqm_script');
+            init_itoggle('lanlimit_autohwnat');
         });
 
         function initial() {
@@ -43,15 +45,49 @@ var $j = jQuery.noConflict();
             show_footer();
             fill_sqm_status(sqm_status());
             showTab(getHash());
-            /* 按设备限速的规则表是 scripts.* 文件，非安全来源（非 LAN/VPN）不允许写，
-             * 这里同步把它置灰，免得用户改完才发现保存不了。与 Advanced_frp.asp /
-             * Advanced_adbyby.asp 的写法一致 */
-            if (!login_safe())
-                inputCtrl(document.form['scripts.lanlimit.conf'], 0);
+            lanlimit_gate();
+        }
+
+        /* 读 QOS 流控总开关的当前状态。
+         * 取 _fake 那个隐藏 checkbox 的 value，而不是 radio 的 checked：
+         * iToggle 在 onClickOn/Off 里显式 .attr("value",1|0)，ASP 渲染时也保证
+         * nvram_match_x 只对匹配到的那个值吐一次 "value=..."，所以它的值始终权威。
+         * radio 那边是 jQuery .attr("checked",...) 改的属性，在某些浏览器上不会
+         * 同步到 .checked 属性，不能作为判据 */
+        function sqm_on() {
+            var f = $('sqm_enable_fake');
+            return !!f && f.value == '1';
+        }
+
+        /* 按设备限速能不能用，取决于两件事：
+         *   ① 来源安全 —— scripts.* 是文件型变量，后端对非 LAN/VPN 会话会直接丢弃
+         *      写入（variables.c 里 EVM_BLOCK_UNSAFE），不置灰的话用户改完才发现存不上
+         *   ② QOS 流控总开关开着 —— lanlimit.sh 里有硬门控，关着时脚本一律不接管
+         * ① 不满足就置灰（存不上，编辑没意义）；② 不满足时**不**置灰，只出提示条：
+         * 规则表允许先编好存着，只是不生效。硬置灰反而让人没法预先准备配置 */
+        function lanlimit_gate() {
+            var safe = login_safe();
+            var on = sqm_on();
+            textarea_scripts_enabled(safe ? 1 : 0);
+            var h = $('lanlimit_gate_hint');
+            if (h)
+                h.style.display = (safe && !on) ? '' : 'none';
+            return safe && on;
         }
 
         function textarea_scripts_enabled(v) {
             inputCtrl(document.form['scripts.lanlimit.conf'], v);
+            /* 自动关硬件加速的开关是一组 radio，inputCtrl 只认单个元素，
+             * 这里逐个处理；单元素和节点列表两种形态都兼容 */
+            var r = document.form['lanlimit_autohwnat'];
+            if (r) {
+                if (r.length) {
+                    for (var i = 0; i < r.length; i++)
+                        r[i].disabled = (v == 0);
+                } else {
+                    r.disabled = (v == 0);
+                }
+            }
         }
 
         function applyRule() {
@@ -301,19 +337,47 @@ function getHash(){
                                              点页面底部的「应用」由 applydb 写盘，服务端写完立刻 reload tc 规则 -->
                                         <table width="100%" align="center" cellpadding="4" cellspacing="0" class="table" style="margin-top: 10px;">
                                             <tr>
+                                                <th width="30%">限速时自动关闭硬件加速</th>
+                                                <td colspan="2">
+                                                    <!-- 用 itoggle 必须配一对隐藏 radio：普通 checkbox 不勾选时
+                                                         表单根本不提交该字段，websGetVar 取到 NULL，applydb 里
+                                                         `if (!value) continue` 会把旧值一直留着，开关就点不动了 -->
+                                                    <div class="main_itoggle">
+                                                        <div id="lanlimit_autohwnat_on_of">
+                                                            <input type="checkbox" id="lanlimit_autohwnat_fake"
+                                                            <% nvram_match_x("", "lanlimit_autohwnat", "1", "value=1 checked"); %><% nvram_match_x("", "lanlimit_autohwnat", "0", "value=0"); %>
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                    <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" name="lanlimit_autohwnat" id="lanlimit_autohwnat_1" class="input" value="1" <% nvram_match_x("", "lanlimit_autohwnat", "1", "checked"); %> /> Yes
+                                                        <input type="radio" value="0" name="lanlimit_autohwnat" id="lanlimit_autohwnat_0" class="input" value="0" <% nvram_match_x("", "lanlimit_autohwnat", "0", "checked"); %> /> No
+                                                    </div>
+                                                    <span style="color:#888;">开启后：只要下表有生效的限速条目，保存时会自动置 <code>hw_nat_mode=0</code>、<code>sfe_enable=0</code> 并卸载 hw_nat 模块；清空下表或关闭本开关会自动还原原值（还原成接管前看到的值，SQM 要求的值也一样）。代价是转发性能下降</span>
+                                                </td>
+                                            </tr>
+                                            <tr>
                                                 <th width="30%">按设备限速</th>
                                                 <td colspan="2">
                                                     <span style="color:#666;">
                                                         每行一台设备，三个字段：<b>目标</b> <b>下行kbit</b> <b>上行kbit</b>，填 <b>0</b> 表示该方向不限。目标填 IP 或 MAC 均可，空格分隔。
                                                     </span>
                                                     <a href="javascript:spoiler_toggle('lanlimit_tip')"><i class="icon-hand-right"></i> 说明与示例</a>
+                                                    <!-- 总开关关着时由 lanlimit_gate() 显示。门控本身在 lanlimit.sh 里，
+                                                         不是靠这个提示条拦的 —— 这里只是让「存了却不生效」这件事别静默发生 -->
+                                                    <div id="lanlimit_gate_hint" class="alert alert-warning" style="display:none; margin-top:8px;">
+                                                        <b>当前不生效</b>：上面「启用SQM」总开关是关着的，而按设备限速是 QOS 流控的子功能。
+                                                        下表可以照常编辑保存（配置会留住），但不会接管任何流量。
+                                                        要让它生效：先把「启用SQM」打开并点页面底部「应用」，再回到这里点一次「应用」。
+                                                    </div>
                                                     <div id="lanlimit_tip" style="display:none; margin-top:8px; color:#666; line-height:1.8;">
                                                         · 下行 5M / 上行 1M：<code>192.168.9.100&nbsp;&nbsp;&nbsp;5120&nbsp;&nbsp;&nbsp;1024</code><br/>
                                                         · 只限上传 512k，按 MAC：<code>A4:5E:60:11:22:33&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;512</code><br/>
                                                         · <code>#</code> 开头是注释，空行忽略<br/>
                                                         · MAC 在应用时通过 DHCP 租约表 / ARP 表解析成当前 IP；设备不在线则本次跳过，等它上线后再点一次「应用」即可<br/>
-                                                        · <b>要稳定生效必须关掉硬件加速</b>：把「外部网络(WAN) → 硬件加速」设为 <b>Disable</b>（等价 <code>nvram set hw_nat_mode=0</code>），SFE 同理（<code>nvram set sfe_enable=0</code>）。否则被硬件直通的长连接（下载、在线视频）不经过内核 qdisc，限速对它们无效。代价是转发性能下降<br/>
-                                                        · 这里与上面的 SQM 是两套独立机制，可以同时用：SQM 管整条线路，这里只管指定的单台设备
+                                                        · <b>本表的限速依赖内核 qdisc</b>：硬件加速会绕过内核协议栈，被直通的长连接（下载、在线视频）限不住。所以上面的「限速时自动关闭硬件加速」默认开着，保存时脚本会自动处理；若手动关掉该开关，就得自己把「外部网络(WAN) → 硬件加速」设为 <b>Disable</b>（等价 <code>nvram set hw_nat_mode=0</code>），SFE 同理（<code>nvram set sfe_enable=0</code>）<br/>
+                                                        · <b>本表挂在 SQM 总开关下面</b>：只有页面顶部「启用SQM」是打开状态时这里才生效；关着时下表照常保存，但不会接管任何流量<br/>
+                                                        · 与上面的 SQM 是两层不同的粒度，可以同时用：SQM 管整条线路，这里只管指定的单台设备；叠加时以更严的那个为准
                                                     </div>
                                                     <br/>
                                                     <textarea rows="12" wrap="off" spellcheck="false" maxlength="8192" class="span12" name="scripts.lanlimit.conf" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.lanlimit.conf",""); %></textarea>

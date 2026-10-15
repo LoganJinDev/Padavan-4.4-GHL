@@ -2022,117 +2022,111 @@ static int shadowsocks_action_hook(int eid, webs_t wp, int argc, char **argv)
 }
 
 #if defined(APP_SHADOWSOCKS)
-static int
-applydb_cgi(webs_t wp, char *urlPrefix, char *webDir, int arg,
-		char *url, char *path, char *query)
+/* 把一份 "k1=v1&k2=v2" 形式的正文里，凡以 name 开头的键逐项落库。
+ *
+ * GET 与 POST 两条路只差「正文从哪来」，切分 / 解码 / 落库是同一套逻辑，
+ * 所以抽出来共用 —— 否则每改一处都得记得改两遍，漏一边就是查半天的怪 bug。
+ * 正文来源见调用处：GET 在 post_buf_backup 里（首字符是占位 '?'，要跳过），
+ * POST 已经在 post_json_buf 里。两者都在 do_html_post_and_get 开头清零，
+ * 不会跨请求残留 */
+static void
+applydb_store(dbclient *client, const char *name, char *body)
 {
-	char *action_mode;
-	char *action_script;
 	char dbjson[100][9999];
 	char dbvar[2048];
 	char dbval[9999];
-	char notify_cmd[128];
-	char db_cmd[128];
-	int i, j;
-	char *result = NULL;
-	char *temp = NULL;
-	char *name = websGetVar(wp, "p","");
-	char scPath[128];
-	char *post_db_buf = post_json_buf;
-	action_mode = websGetVar(wp, "action_mode", "");
-	action_script = websGetVar(wp, "action_script", "");
+	char *result;
+	char *temp;
 	char userm[] = "deleting";
 	char useping[] = "ping";
 	char useaping[] = "allping";
 	char usedlink[] = "dlink";
 	char useddlink[] = "ddlink";
+	size_t nlen = strlen(name);
+	int i, j;
+
+	/* ⚠️ 顺序很关键：这里**不**整体 unescape，先按 '&' 切分、再在下面的循环里
+	 * 逐个解码。老代码是先把整段查询串 unescape 再 strtok，那样值里被百分号
+	 * 编码的 %26 会还原成真正的 '&'，随即被 strtok 当分隔符切断，长值（节点
+	 * JSON、分流规则）会被拦腰截断 —— 而且是静默的：dbus 收到一个语法合法但
+	 * 残缺的 JSON，界面上只看到「保存后闪一下、没生效」。
+	 * 键名都是 ASCII 字母数字下划线，encodeURIComponent 不会改动它们，所以在
+	 * 未解码的串上做前缀匹配是安全的。
+	 * i < 100 的边界不能省：dbjson 只有 100 项，超过就会写越界 */
+	result = strtok(body, "&");
+	i = 0;
+	while (result != NULL && i < 100) {
+		strcpy(dbjson[i], result);
+		i++;
+		result = strtok(NULL, "&");
+	}
+
+	for (j = 0; j < i; j++) {
+		if (strncasecmp(dbjson[j], name, nlen)) {
+			continue;
+		}
+		memset(dbvar, '\0', sizeof(dbvar));
+		memset(dbval, '\0', sizeof(dbval));
+		temp = strstr(dbjson[j], "=");
+		/* 没有 '=' 的残条目先跳过，否则下面的 strcpy(dbval, temp+1) 会解引用空指针 */
+		if (!temp) {
+			continue;
+		}
+		strcpy(dbval, temp + 1);
+		strncpy(dbvar, dbjson[j], strlen(dbjson[j]) - strlen(temp));
+		/* 到这一步才解码，确保值里的 %26 不会先被上面的 strtok 撕开 */
+		unescape(dbvar);
+		unescape(dbval);
+
+		if (strcmp(dbval, userm) == 0) {
+			doSystem("dbus remove %s", dbvar);
+		} else if (strcmp(dbval, useping) == 0) {
+			doSystem("/etc_ro/ss/ping.sh %s", dbvar);
+		} else if (strcmp(dbval, useaping) == 0) {
+			doSystem("/etc_ro/ss/allping.sh");
+		} else if (strcmp(dbval, usedlink) == 0) {
+			doSystem("/usr/bin/update_dlink.sh %s", "start");
+		} else if (strcmp(dbval, useddlink) == 0) {
+			doSystem("/usr/bin/update_dlink.sh %s", "reset");
+		} else
+			/* 走 dbus 的 socket 协议直写，绕开 shell。
+			 *
+			 * 老代码这里是 doSystem("dbus set %s='%s'", dbvar, dbval)，拼出来是
+			 *     dbus set KEY='VALUE'
+			 * —— 值被裹在一对单引号里交给 /bin/sh -c。于是：
+			 *   ① 值里只要出现一个单引号（节点别名、密码里都可能出现）就把引号
+			 *      配对打断，sh 报 unexpected EOF，整条命令作废，这个键根本写不
+			 *      进去。界面上就是「保存后闪一下没生效」。
+			 *   ② 值里夹带 `x'; 命令; #` 这种载荷时，残留的尾巴被 # 注释掉，整行
+			 *      语法合法，注入的命令就以 root 身份执行了。
+			 *   ③ doSystem 的 cmd_buf 只有 512 字节，长节点 JSON 会被截断。
+			 * dbclient_bulk 按显式长度把键、值分开送出，这三个限制都不存在 */
+			dbclient_bulk(client, "set", dbvar, strlen(dbvar), dbval, strlen(dbval));
+	}
+}
+
+static int
+applydb_cgi(webs_t wp, char *urlPrefix, char *webDir, int arg,
+		char *url, char *path, char *query)
+{
+	char *name = websGetVar(wp, "p","");
 
 	dbclient client;
+
 	dbclient_start(&client);
 	if (strlen(name) <= 0) {
 		printf("No \"name\"!\n");
 	}
-	if ( !strcmp("", post_db_buf)){
-		//get
-		sprintf(post_db_buf, "%s", post_buf_backup+1);
-		unescape(post_db_buf);
-		//logmessage("HTTPD", "url: %s,%s", post_db_buf, name);
-		strcpy(post_json_buf, post_db_buf);
-		result = strtok( post_json_buf, "&" );
-		i =0;
-	while( result != NULL )
-	{
-		if (result!=NULL)
-		{
-		strcpy(dbjson[i], result);
-		i++;
-			result = strtok( NULL, "&" );
-		}
+
+	/* 正文来源二选一：post_json_buf 为空说明这次没有 POST body，是 GET，
+	 * 正文在 post_buf_backup 里（首个字符是 do_html_post_and_get 塞进去的
+	 * 占位 '?'，从 +1 处开始才是真正的查询串）。
+	 * 老代码为这点差别把整个切分 + 落库循环抄了两份，现在只剩这一处分叉 */
+	if (!strcmp("", post_json_buf)) {
+		strcpy(post_json_buf, post_buf_backup + 1);
 	}
-	for (j =0; j < i; j++)
-	{
-		if(!strncasecmp(dbjson[j], name, strlen(name))){
-				memset(dbvar,'\0',sizeof(dbvar));
-				memset(dbval,'\0',sizeof(dbval));
-				temp=strstr(dbjson[j], "=");
-				strcpy(dbval, temp+1);
-				strncpy(dbvar, dbjson[j], strlen(dbjson[j])-strlen(temp));
-			//logmessage("HTTPD", "name: %s post: %s", dbvar, userm);
-			if(strcmp(dbval,userm) == 0)
-				doSystem("dbus remove %s", dbvar);
-			else if(strcmp(dbval,useping) == 0)
-				doSystem("/etc_ro/ss/ping.sh %s", dbvar);
-			else if(strcmp(dbval,useaping) == 0)
-				doSystem("/etc_ro/ss/allping.sh");
-			else if(strcmp(dbval,usedlink) == 0)
-				doSystem("/usr/bin/update_dlink.sh %s", "start");
-			else if(strcmp(dbval,useddlink) == 0)
-				doSystem("/usr/bin/update_dlink.sh %s", "reset");
-			else
-				doSystem("dbus set %s='%s'", dbvar, dbval);
-		}
-	}
-	} else {
-	//post
-	unescape(post_db_buf);
-	//logmessage("HTTPD", "name: %s post: %s", name, post_json_buf);
-	//logmessage("HTTPD", "name: %s post: %s", name, post_db_buf);
-	strcpy(post_json_buf, post_db_buf);
-	result = strtok( post_json_buf, "&" );
-	i =0;
-	while( result != NULL )
-	{
-		if (result!=NULL)
-		{
-		strcpy(dbjson[i], result);
-		i++;
-			result = strtok( NULL, "&" );
-		}
-	}
-	for (j =0; j < i; j++)
-	{
-		if(!strncasecmp(dbjson[j], name, strlen(name))){
-				memset(dbvar,'\0',sizeof(dbvar));
-				memset(dbval,'\0',sizeof(dbval));
-				temp=strstr(dbjson[j], "=");
-				strcpy(dbval, temp+1);
-				strncpy(dbvar, dbjson[j], strlen(dbjson[j])-strlen(temp));
-			//logmessage("HTTPD", "name: %s post: %s", dbvar, dbval);
-			if(strcmp(dbval,userm) == 0)
-				doSystem("dbus remove %s", dbvar);
-			else if(strcmp(dbval,useping) == 0)
-				doSystem("/etc_ro/ss/ping.sh %s", dbvar);
-			else if(strcmp(dbval,useaping) == 0)
-				doSystem("/etc_ro/ss/allping.sh");
-			else if(strcmp(dbval,usedlink) == 0)
-				doSystem("/usr/bin/update_dlink.sh %s", "start");
-			else if(strcmp(dbval,useddlink) == 0)
-				doSystem("/usr/bin/update_dlink.sh %s", "reset");
-			else
-				doSystem("dbus set %s='%s'", dbvar, dbval);
-		}
-	}
-	}
+	applydb_store(&client, name, post_json_buf);
+
 	dbclient_end(&client);
 	doSystem("/sbin/mtd_storage.sh %s", "save");
 	return 0;
