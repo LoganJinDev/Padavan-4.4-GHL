@@ -108,12 +108,14 @@ on:
         default: true
 
 env:
-  # 固件名前缀，同时决定 Release 里 trx 的文件名
+  # 固件名前缀，同时决定 Release 里 trx 的文件名。
+  # 文件名公式：${FIRMWARE_AUTHOR}-<target>-Padavan-4.4-<toolchain>[-nano][-cpufreq-<oc>]-<BUILD_DATE>.trx
+  # 注意：trunk/vendors/Ralink/Makefile 的 IMAGE_NAME 是另一处独立耦合（build.yml 不改名，只吃那边），改名字要两处一起改。
   FIRMWARE_AUTHOR: Logan
   TOOLCHAIN: ${{ inputs.toolchain }}
-  # 预编译工具链只有上游 TurBoTse/padavan 的 Release 里才发布，本仓库不重新发布。
-  # 这里保留上游地址，不要改成 LoganJinDev/Padavan-4.4-GHL，否则 404 导致构建失败。
-  TOOLCHAIN_URL: https://github.com/TurBoTse/padavan/releases/download/toolchain/${{ inputs.toolchain }}.tar.xz
+  # 预编译交叉工具链已自托管到本仓库 tag "toolchain" 的 Release（从上游 TurBoTse/padavan 原样搬运）。
+  # 要更换/新增工具链，往同一个 tag 的 Release 里补传 <toolchain>.tar.xz 即可，这里不用改。
+  TOOLCHAIN_URL: https://github.com/LoganJinDev/Padavan-4.4-GHL/releases/download/toolchain/${{ inputs.toolchain }}.tar.xz
   CONFIGFILE: trunk/configs/templates/${{ inputs.target }}.config
 
 jobs:
@@ -207,7 +209,7 @@ jobs:
         run: |
           make ${{ inputs.target }} TOOLCHAIN=${{ inputs.toolchain }}
           mkdir -p trunk/output
-          base="${FIRMWARE_AUTHOR}-${{ inputs.target }}-4.4-${{ inputs.toolchain }}"
+          base="${FIRMWARE_AUTHOR}-${{ inputs.target }}-Padavan-4.4-${{ inputs.toolchain }}"
           [ "${{ inputs.nanoversion }}" = "true" ] && base="${base}-nano"
           [ "${{ inputs.cpufreq }}" = "true" ] && base="${base}-cpufreq-${{ inputs.mt7621_oc }}"
           base="${base}-${BUILD_DATE}"
