@@ -2,7 +2,7 @@
 # 固件名前缀。用 ?= 让命令行/环境变量可覆盖：make GHL IMAGE_AUTHOR=Foo
 IMAGE_AUTHOR    ?= Logan
 IMAGE_DATE      = $(shell TZ='Asia/Shanghai' date +%Y%m%d)
-IMAGE_NAME      = $(IMAGE_AUTHOR)-$(CONFIG_FIRMWARE_PRODUCT_ID)-$(FIRMWARE_KERNEL_VER)-$(CONFIG_CROSS_COMPILE)-$(IMAGE_DATE).trx
+IMAGE_NAME      = $(IMAGE_AUTHOR)-$(CONFIG_FIRMWARE_PRODUCT_ID)-Padavan-$(FIRMWARE_KERNEL_VER)-$(CONFIG_CROSS_COMPILE)-$(IMAGE_DATE).trx
 IMAGE           = $(IMAGEDIR)/$(IMAGE_NAME)
 
 # === Paths ===
