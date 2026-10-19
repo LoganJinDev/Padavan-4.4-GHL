@@ -17,13 +17,6 @@ else
 	cp /usr/bin/ap_script.sh /etc/storage/ap_script.sh
 fi
 
-# 按设备限速。配置里没有有效条目时 lanlimit.sh 自己会跳过，不会多挂 qdisc，
-# 所以这里无条件调用即可。放在等外网之前，LAN 侧限速开机即刻生效
-if [ -f "/etc/storage/lanlimit.conf" ] ; then
-	logger -t "自动启动" "正在启动 按设备限速..."
-	/usr/bin/lanlimit.sh start
-fi
-
 smartdns_conf="/etc/storage/smartdns_custom.conf"
 dnsmasq_Conf="/etc/storage/dnsmasq/dnsmasq.conf"
 smartdns_Ini="/etc/storage/smartdns_conf.ini"
@@ -57,6 +50,17 @@ if [ $(nvram get sqm_enable) = 1 ] ; then
 sleep 10
 logger -t "自动启动" "正在启动 SQM QOS..."
 /usr/lib/sqm/run.sh
+fi
+
+# 按设备限速必须排在 SQM 之后，两个原因：
+#   ① 上行限速挂在 br0 的 ingress 上，而 SQM 每次启动都会 del + add 这个 qdisc，
+#      先起 lanlimit 的话它挂的过滤器会被 SQM 立刻清掉；
+#   ② runmode_2/4 会把 hw_nat_mode 设成 2 并 modprobe hw_nat（重新打开硬件
+#      加速），先起 lanlimit 的话它刚关掉的硬件加速会被 SQM 再打开，限速静默失效。
+# 配置里没有有效条目时 lanlimit.sh 自己会跳过；SQM 总开关关着时它也会自行退出
+if [ -f "/etc/storage/lanlimit.conf" ] ; then
+	logger -t "自动启动" "正在启动 按设备限速..."
+	/usr/bin/lanlimit.sh start
 fi
 
 if [ $(nvram get adbyby_enable) = 1 ] ; then

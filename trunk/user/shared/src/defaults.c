@@ -558,6 +558,9 @@ struct nvram_pair router_defaults[] = {
 	/* ttyd related */
 	{ "ttyd_enable", "0" },
 	{ "ttyd_port", "7681" },
+	/* ttyd 独立登录凭据，出厂留空 => ttyd.sh 拒绝启动，防止默认免密 root shell */
+	{ "ttyd_user", "" },
+	{ "ttyd_pass", "" },
 #endif
 
 #if defined(APP_VLMCSD)

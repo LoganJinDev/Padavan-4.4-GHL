@@ -375,20 +375,24 @@ function getHash(){
                                                     <div id="lanlimit_gate_hint" class="alert alert-warning" style="display:none; margin-top:8px;">
                                                         <b>当前不生效</b>：上面「启用SQM」总开关是关着的，而按设备限速是 QOS 流控的子功能。
                                                         下表可以照常编辑保存（配置会留住），但不会接管任何流量。
-                                                        要让它生效：先把「启用SQM」打开并点页面底部「应用」，再回到这里点一次「应用」。
+                                                        要让它生效：把「启用SQM」打开，再点页面底部的「应用」——
+                                                        同一次应用里就会自动接管，不需要额外操作。
+                                                        反过来，关掉「启用SQM」并应用时，下表已有的限速规则会被自动撤掉。
                                                     </div>
                                                     <div id="lanlimit_tip" style="display:none; margin-top:8px; color:#666; line-height:1.8;">
                                                         · 下行 5M / 上行 1M：<code>192.168.9.100&nbsp;&nbsp;&nbsp;5120&nbsp;&nbsp;&nbsp;1024</code><br/>
                                                         · 只限上传 512k，按 MAC：<code>A4:5E:60:11:22:33&nbsp;&nbsp;&nbsp;0&nbsp;&nbsp;&nbsp;512</code><br/>
                                                         · <code>#</code> 开头是注释，空行忽略<br/>
                                                         · MAC 在应用时通过 DHCP 租约表 / ARP 表解析成当前 IP；设备不在线则本次跳过，等它上线后再点一次「应用」即可<br/>
+                                                        · <b>限速具体挂在哪里</b>：下行挂在 LAN 网桥的每个从属口（<code>eth2</code> / <code>ra0</code> / <code>rai0</code>，即网线 / 2.4G / 5G）的出口上，按目标 IP 匹配；上行挂在网桥主设备 <code>br0</code> 的入口上，镜像到 <code>ifb0</code> 再整形。两者都刻意避开 <code>br0</code> 的 root，所以与 SQM 各占各的队列、能真正叠加，不会互删<br/>
                                                         · <b>本表的限速依赖内核 qdisc</b>：硬件加速会绕过内核协议栈，被直通的长连接（下载、在线视频）限不住。所以上面的「限速时自动关闭硬件加速」默认开着，保存时脚本会自动处理；若手动关掉该开关，就得自己把「外部网络(WAN) → 硬件加速」设为 <b>Disable</b>（等价 <code>nvram set hw_nat_mode=0</code>），SFE 同理（<code>nvram set sfe_enable=0</code>）<br/>
                                                         · <b>本表挂在 SQM 总开关下面</b>：只有页面顶部「启用SQM」是打开状态时这里才生效；关着时下表照常保存，但不会接管任何流量<br/>
+                                                        · <b>SQM 的模式别选 1 和 4</b>：那两种模式下 SQM 整形的就是某个 LAN 从属口，而一个网口只容得下一个根队列，该口的下行限速就挂不上去了（上行不受影响）。要两者同时用，SQM 的模式选 <b>2</b> 或 <b>3</b>（整形 <code>br0</code>）<br/>
                                                         · 与上面的 SQM 是两层不同的粒度，可以同时用：SQM 管整条线路，这里只管指定的单台设备；叠加时以更严的那个为准
                                                     </div>
                                                     <br/>
                                                     <textarea rows="12" wrap="off" spellcheck="false" maxlength="8192" class="span12" name="scripts.lanlimit.conf" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.lanlimit.conf",""); %></textarea>
-                                                    <span style="color:#888;">改完点页面底部的「应用」即保存并立即生效；重启后由 autostart.sh 自动恢复</span>
+                                                    <span style="color:#888;">改完点页面底部的「应用」即保存并立即生效；重启后由开机脚本自动恢复（它在 SQM 启动之后执行，顺序不会错）</span>
                                                 </td>
                                             </tr>
                                         </table>

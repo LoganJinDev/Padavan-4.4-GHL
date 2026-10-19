@@ -108,8 +108,18 @@ write_state_file() {
 # ifb is associated with IF
 get_ifb_associated_with_if() {
     local CUR_IF=$1
+    # 只认自己的 ifb，即 ifb_name() 造出来的 ifb4* 前缀那批。
+    # 原来这里匹配任意 ifbXXX，而 br0 的 ingress 是多方共用的入口：别的组件
+    # （本固件里是按设备限速 lanlimit.sh 的 ifb0）也会往同一条链上挂 mirred，
+    # 于是 grep 会把它们的 ifb 名一并收进来。这直接违背本函数调用方
+    # stop-sqm 的注释「make sure to only delete the ifb associated with the
+    # current interface」—— CUR_IFB 变成「ifb0\nifb4br0」之后，
+    # `tc qdisc del dev $CUR_IFB root` 会被 shell 按空白拆成两个实参，
+    # 命令整体报错且被吞掉，结果连 SQM 自己的 ifb 队列都删不掉，
+    # 下次 add 撞车。限定 ifb4 前缀即恢复作者本意，与 IFB_PREFIX 一致。
+    #
     # Stray ' in the comment is a fix for broken editor syntax highlighting
-    local CUR_IFB=$( $TC_BINARY -p filter show parent ffff: dev ${CUR_IF} | grep -o -E ifb'[^)\ ]+' )    # '
+    local CUR_IFB=$( $TC_BINARY -p filter show parent ffff: dev ${CUR_IF} | grep -o -E ifb4'[^)\ ]+' )    # '
     sqm_debug "ifb associated with interface ${CUR_IF}: ${CUR_IFB}"
 
     # we could not detect an associated IFB for CUR_IF

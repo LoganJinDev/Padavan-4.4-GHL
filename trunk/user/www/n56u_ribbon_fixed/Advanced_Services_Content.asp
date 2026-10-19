@@ -254,6 +254,13 @@ function change_ttyd_enabled(){
 	var v = document.form.ttyd_enable[0].checked;
 	showhide_div('ttyd_webui', v);
 	showhide_div('ttyd_port', v);
+	showhide_div('ttyd_user', v);
+	showhide_div('ttyd_pass', v);
+	// 非 LAN/VPN 会话不允许修改登录凭据，与后端 web_ex.c 里的按变量名 LAN 判定保持一致
+	if (!login_safe()) {
+		document.form.ttyd_user.disabled = true;
+		document.form.ttyd_pass.disabled = true;
+	}
 }
 
 function on_ttyd_link(){
@@ -556,6 +563,17 @@ function on_ttyd_link(){
                                         <tr id="ttyd_port"> <th width="50%"><#Adm_Svc_ttyd_port#></th>
                                             <td>
                                                 <input type="text" maxlength="6" class="input" size="15" name="ttyd_port" style="width: 145px" value="<% nvram_get_x("","ttyd_port"); %>" />
+                                            </td>
+                                        </tr>
+                                        <tr id="ttyd_user"> <th width="50%"><#Adm_Svc_ttyd_user#></th>
+                                            <td>
+                                                <input type="text" maxlength="32" class="input" size="25" name="ttyd_user" autocomplete="off" value="<% nvram_get_x("","ttyd_user"); %>" />
+                                            </td>
+                                        </tr>
+                                        <tr id="ttyd_pass"> <th width="50%"><#Adm_Svc_ttyd_pass#></th>
+                                            <td>
+                                                <input type="password" maxlength="32" class="input" size="25" name="ttyd_pass" autocomplete="off" value="" />
+                                                <br/><#Adm_Svc_ttyd_pass_hint#>
                                             </td>
                                         </tr>
                                         <tr id="ttyd_webui">

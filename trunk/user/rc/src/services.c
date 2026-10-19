@@ -470,6 +470,18 @@ void start_sqm(void){
 void restart_sqm(void){
 	stop_sqm();
 	start_sqm();
+	/* SQM 每次启动都会先删掉再重建 br0 的 ingress qdisc（各 .qos 脚本的
+	 * ingress() 函数），而按设备限速的上行过滤器正挂在同一条链上，
+	 * 会被一并清掉、必须重挂。这里补一次重载，让一次「应用」就同时完成
+	 * 两件事，用户不必先点应用、再回去点一次。
+	 *
+	 * 顺序有保证：eval() 展开为 _eval(..., ppid = NULL)，那条分支会
+	 * waitpid 阻塞到子进程退出，所以这条 reload 一定落在 SQM 起完之后，
+	 * 不会被 SQM 随后的 del + add 反过来清掉。
+	 *
+	 * 脚本自带门控（sqm_enable 不为 1 时只做清理随即退出），因此在
+	 * 「关掉 SQM」这条路径上照样调用也是对的 —— 它会顺手撤掉残留规则。 */
+	eval("/usr/bin/lanlimit.sh","reload");
 }
 #endif
 
