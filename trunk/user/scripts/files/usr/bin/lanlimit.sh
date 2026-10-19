@@ -7,11 +7,42 @@
 # 用法：lanlimit.sh start | stop | reload | show
 #
 # 限速的两个方向分别落在哪里：
-#   · 下行（外网 -> 客户端）：在 LAN 网桥的 egress 上整形。网桥出口方向就是
-#     「发给客户端」，所以匹配 dst。
-#   · 上行（客户端 -> 外网）：网桥的 ingress 方向没有队列，必须先 mirred 镜像
-#     到一个 ifb 虚拟设备，再在 ifb 上整形。镜像时包头不变，所以匹配 src。
+#
+#   · 下行（外网 -> 客户端）挂在 LAN 网桥的**每个从属口**（eth2 / ra0 / rai0 ...）
+#     的 egress 上。从属口的出口方向就是「发给客户端」，所以匹配 dst。
+#     为什么不挂网桥主设备 br0：SQM 在 runmode_2/3 下把整形树挂在 br0 的 root
+#     上，而 root 一个设备只有一个。两边都抢，谁后执行谁把对方连根删掉
+#     （旧实现的 do_stop 无条件 `del dev br0 root`，正是「开了 SQM 再点应用就
+#     失效」的根因）。改挂从属口之后，下行与 SQM 各占各的设备，彼此删不到。
+#
+#   · 上行（客户端 -> 外网）只能挂在网桥主设备 br0 的 ingress 上。
+#     这不是选择而是唯一可行点，两条实测结论支撑：
+#       ① 从属口的 ingress 拦不到上行包 —— bridge 在 br_pass_frame_up() 里会
+#          嵌套再调一次 netif_receive_skb，此时 skb->dev 已经换成 br0，于是
+#          handle_ing() 读的是 br0 的 ingress 链，从属口上挂多少都是 Sent 0；
+#       ② WAN 口（eth3）的 ingress 虽然生效，但它位于 DNAT 之前，进来的下行包
+#          dst 仍是公网地址，认不出是哪台内网设备。
+#     ingress 本身没有队列，必须 mirred 到一个 ifb 虚拟设备再整形。镜像时包头
+#     不变，所以匹配 src。
+#
 #   未被限速的设备走 default 类，速率取一个远高于实际带宽的值，等价于不限。
+#
+# ⚠️ 与 SQM 共用 br0 ingress 的后果：SQM 每次启动都会 `del` 再 `add` 这个 qdisc
+#    （各 .qos 脚本的 ingress() 函数），本脚本挂上去的过滤器会被一并清掉，需要
+#    再触发一次 reload 才能恢复；界面点「应用」时会连带重载本脚本，所以正常操作
+#    路径上会自动重建。为把两边的干扰降到最低：
+#      · 本脚本过滤器一律用 prio 1，SQM 用 prio 10，删除时按 prio 精确切分；
+#      · do_stop 只在过滤器链**空了**才删 ingress qdisc，SQM 在跑时永远不空，
+#        因此绝不会误删它的 qdisc；
+#      · 建 ingress 只发裸 add 并吞掉失败 —— 已存在说明 SQM 建好了，直接共用。
+#        这里刻意不用 `qdisc replace`：sch_ingress 没有 change 回调，replace 会
+#        走销毁重建，连 SQM 的过滤器一起清掉。
+#
+# ⚠️ 另一种残余耦合：SQM 的 runmode_1 整形的就是 eth2，runmode_4 整的是
+#    sqm_active 指定的那个接口，两者都可能是网桥的从属口。一个设备只容得下
+#    一个 root qdisc，所以那种模式下下行限速本就挂不上去（build_skeleton 的
+#    add 会失败）。此时代本脚本不去抢，do_stop 也认得出那不是自己的树、不会删
+#    （见 port_is_ours）。要同时用，把 SQM 的模式选成 2 或 3（整形 br0）即可。
 #
 # ⚠️ 硬件 NAT 加速（hw_nat_mode）与 SFE 会绕过内核协议栈，被加速的长连接
 #    （下载、在线视频）不经过 qdisc，限速对它们无效。
@@ -29,12 +60,11 @@
 #    门控特意放在脚本里而不是界面或后端，因为 reload 有三个入口：
 #      ① 界面点「应用」—— web_ex.c 里对 scripts.lanlimit.conf 的写盘分支会
 #         无条件 fork 一次 `lanlimit.sh reload`，它根本不看 sqm_enable；
-#      ② 开机脚本；
+#      ② 开机脚本（autostart.sh，排在 SQM 启动之后）；
 #      ③ 手工执行。
 #    只在界面加限制的话，①③ 仍然会绕过。
 
-LAN_IF="$(nvram get lan_ifname 2>/dev/null)"
-[ -n "$LAN_IF" ] || LAN_IF="br0"
+LAN_IF="br0"
 IFB_DEV="ifb0"
 CONF="/etc/storage/lanlimit.conf"
 # 未单独限速的设备走这个速率，取得足够高即等价于不限
@@ -46,6 +76,31 @@ AUTOHWNAT="$(nvram get lanlimit_autohwnat 2>/dev/null)"
 log() {
 	logger -t lanlimit "$1"
 	echo "$1"
+}
+
+# 列出网桥当前的全部从属口，一行一个；没有则输出为空。
+# ⚠️ 判据必须是「brif 目录里有条目」而不是「br0 存在」：br0 会先于成员口出现，
+# 此时若退回 br0 本身，规则就会挂到网桥主设备上，正好撞上 SQM 的整形树。
+# 目录不存在、或存在但为空，一律返回空 —— 调用方据此直接跳过。
+lan_ports() {
+	local p
+	for p in /sys/class/net/"$LAN_IF"/brif/*; do
+		[ -e "$p" ] || continue
+		basename "$p"
+	done
+}
+
+# 判断某个从属口 root 上的整形树是不是本脚本建的。
+# htb 的 dump 会把自己的 default 类号一并打出来，本脚本恒用 99，SQM 的 htb 用 10，
+# cake / tbf 的 root 压根不是 htb。靠这个标记就能精确区分归属，不必去复刻 SQM 的
+# 「runmode -> 接口」映射（那份映射在上游一改就会失配，反而变成新的隐患）
+port_is_ours() {
+	local p q
+	p="$1"
+	q="$(tc qdisc show dev "$p" root 2>/dev/null)"
+	case "$q" in *"htb 1:"*) ;; *) return 1 ;; esac
+	case "$q" in *"default 99"*) return 0 ;; esac
+	return 1
 }
 
 # MAC -> IP。先查 dnsmasq 当前租约，再用 ARP 表补
@@ -71,7 +126,7 @@ resolve() {
 }
 
 # 从配置里读出「有没有人要限下行 / 限上行」。没有就不建对应的 qdisc，
-# 免得凭空给网桥挂一层无用的整形
+# 免得凭空给网口挂一层无用的整形
 scan_conf() {
 	DL=0
 	UL=0
@@ -82,9 +137,22 @@ scan_conf() {
 	done < "$CONF"
 }
 
+# 只拆自己挂的东西。br0 与从属口上分别可能立着 SQM 的整形树，处置方式不同：
+#   · br0 root    —— SQM 在 runmode_2/3 下的落脚点，一个 qdisc 都不碰
+#   · br0 ingress —— 上行唯一可行的落点，必须与 SQM 共用同一个 qdisc，
+#                    所以只删自己的过滤器（prio 1，SQM 是 prio 10），
+#                    并且确认链上再没有别人才回收 qdisc
+#   · 从属口 root —— 按 port_is_ours 认领，不是自己的一律不动
 do_stop() {
-	tc qdisc del dev "$LAN_IF" root 2>/dev/null
-	tc qdisc del dev "$LAN_IF" ingress 2>/dev/null
+	local p
+	for p in $(lan_ports); do
+		port_is_ours "$p" || continue
+		tc qdisc del dev "$p" root 2>/dev/null
+	done
+	tc filter del dev "$LAN_IF" parent ffff: protocol ip prio 1 2>/dev/null
+	if [ -z "$(tc filter show dev "$LAN_IF" parent ffff: 2>/dev/null)" ]; then
+		tc qdisc del dev "$LAN_IF" ingress 2>/dev/null
+	fi
 	tc qdisc del dev "$IFB_DEV" root 2>/dev/null
 	ip link set "$IFB_DEV" down 2>/dev/null
 	log "已清除全部限速规则"
@@ -92,14 +160,19 @@ do_stop() {
 
 # 建两个方向各自的「骨架」：根 qdisc + 不限速的 default 类
 build_skeleton() {
+	local p
 	if [ "$DL" = "1" ]; then
-		tc qdisc add dev "$LAN_IF" root handle 1: htb default 99
-		tc class add dev "$LAN_IF" parent 1: classid 1:99 htb rate "$FREE_RATE"
+		for p in $(lan_ports); do
+			tc qdisc add dev "$p" root handle 1: htb default 99
+			tc class add dev "$p" parent 1: classid 1:99 htb rate "$FREE_RATE"
+		done
 	fi
 	if [ "$UL" = "1" ]; then
 		modprobe ifb 2>/dev/null
 		ip link set "$IFB_DEV" up 2>/dev/null
-		tc qdisc add dev "$LAN_IF" handle ffff: ingress
+		# 与 SQM 共用 br0 的 ingress。已存在时 add 会失败，这里就是要它失败 ——
+		# 说明 SQM 已经建好，直接拿来用即可。刻意不用 replace：见文件头注释
+		tc qdisc add dev "$LAN_IF" handle ffff: ingress 2>/dev/null
 		tc qdisc add dev "$IFB_DEV" root handle 2: htb default 99
 		tc class add dev "$IFB_DEV" parent 2: classid 2:99 htb rate "$FREE_RATE"
 	fi
@@ -107,7 +180,7 @@ build_skeleton() {
 
 # 给一台设备挂上类与过滤器。n 是类号，从 1 开始，避开 default 的 99
 limit_one() {
-	local tgt dl ul ip n
+	local tgt dl ul ip n p
 	tgt="$1"
 	dl="$2"
 	ul="$3"
@@ -119,10 +192,14 @@ limit_one() {
 	fi
 	n="$4"
 	if [ "${dl:-0}" -gt 0 ] 2>/dev/null; then
-		tc class add dev "$LAN_IF" parent 1: classid "1:$n" \
-			htb rate "${dl}kbit" ceil "${dl}kbit" burst 15k
-		tc filter add dev "$LAN_IF" parent 1: protocol ip prio 1 \
-			u32 match ip dst "$ip"/32 flowid "1:$n"
+		# 每个从属口都要挂：设备接 2.4G 走 ra0、接 5G 走 rai0、走网线走 eth2，
+		# 事先不知道它会从哪个口出去，全部挂上一份，代价只是几条规则
+		for p in $(lan_ports); do
+			tc class add dev "$p" parent 1: classid "1:$n" \
+				htb rate "${dl}kbit" ceil "${dl}kbit" burst 15k
+			tc filter add dev "$p" parent 1: protocol ip prio 1 \
+				u32 match ip dst "$ip"/32 flowid "1:$n"
+		done
 	fi
 	if [ "${ul:-0}" -gt 0 ] 2>/dev/null; then
 		# 只有被限上行的设备才需要从 ingress 镜像出来
@@ -209,13 +286,13 @@ hwnat_restore() {
 do_start() {
 	# 按设备限速挂在 QOS 流控（SQM）总开关下面：关着就不该生效。
 	# 这里同时承担「撤销」职责 —— 之前生效过、现在总开关被关掉的情况下，
-	# 光不新建规则不够，旧的 tc 规则和硬件加速改动都得还回去。
+	# 光不新建规则不够，旧的下行队列与上行过滤器都得还回去。
 	#
 	# 清理动作是无条件做的，不去先探测「有没有残留」：探测要么多一个持久标记、
-	# 要么去 tc show 里 grep "htb 1:"，而后者会误判 —— SQM 自己在 br0 上也挂
-	# 同样是 htb 1: 的 qdisc，grep 到就会把它删掉。无条件清扫反而安全，因为
-	# SQM 关着时它的 qdisc 已由 stop-sqm 撤掉，此时删除只会命中我们自己挂的东西
-	# （没有就什么都不删）。代价是每次点「应用」多一条日志和几条空转的 tc 调用
+	# 要么去 tc show 里比对，而后者容易误判。无条件清扫在这里是安全的，因为
+	# do_stop 已经改成只碰自己的东西 —— 从属口的 root 按 port_is_ours 认领，
+	# br0 只删自己的 prio 1 过滤器、链非空时不动 qdisc，所以 SQM 正开着也删不到
+	# 它头上。代价是每次点「应用」多一条日志和几条空转的 tc 调用
 	if [ "$(nvram get sqm_enable 2>/dev/null)" != "1" ]; then
 		do_stop
 		hwnat_restore
@@ -227,14 +304,15 @@ do_start() {
 		log "配置不存在：$CONF"
 		return 1
 	fi
-	# 网桥还没起来的场景（开机脚本里调）等一小会儿
+	# 网桥还没起来的场景（开机脚本里调）等一小会儿。判据取「有没有从属口」
+	# 而不是「br0 在不在」：br0 会先于成员口出现，此时挂规则等于挂到空网桥上
 	w=0
-	while [ ! -d "/sys/class/net/$LAN_IF" ] && [ "$w" -lt 20 ]; do
+	while [ -z "$(lan_ports)" ] && [ "$w" -lt 20 ]; do
 		sleep 1
 		w=$((w + 1))
 	done
-	if [ ! -d "/sys/class/net/$LAN_IF" ]; then
-		log "接口 $LAN_IF 不存在，放弃"
+	if [ -z "$(lan_ports)" ]; then
+		log "网桥 $LAN_IF 下没有从属口，放弃"
 		return 1
 	fi
 
@@ -271,8 +349,13 @@ do_start() {
 }
 
 do_show() {
-	echo "--- $LAN_IF 出口（下行）---"
-	tc -s class show dev "$LAN_IF" 2>/dev/null
+	local p
+	for p in $(lan_ports); do
+		echo "--- $p 出口（下行）---"
+		tc -s class show dev "$p" 2>/dev/null
+	done
+	echo "--- $LAN_IF 入口（上行，镜像到 $IFB_DEV）---"
+	tc -s filter show dev "$LAN_IF" parent ffff: 2>/dev/null
 	echo "--- $IFB_DEV 出口（上行）---"
 	tc -s class show dev "$IFB_DEV" 2>/dev/null
 }

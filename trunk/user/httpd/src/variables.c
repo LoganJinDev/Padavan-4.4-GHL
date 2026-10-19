@@ -231,6 +231,12 @@
 #if defined (APP_TTYD)
 			{"ttyd_enable", "", NULL, EVM_RESTART_TTYD},
 			{"ttyd_port", "", NULL, EVM_RESTART_TTYD},
+			/* ttyd 独立登录凭据。此处刻意不加 EVM_BLOCK_UNSAFE：
+			 * 该宏是 (1ULL << 65)，位移超出 64 位宽度属未定义行为，
+			 * 与 EVM_RESTART_TTYD 做 & ~ 运算可能把重启位一起抹掉，
+			 * 导致改密码后 ttyd 不重启。LAN 限制改在 web_ex.c 里按变量名显式判定。 */
+			{"ttyd_user", "", NULL, EVM_RESTART_TTYD},
+			{"ttyd_pass", "", NULL, EVM_RESTART_TTYD},
 #endif
 #if defined (APP_VLMCSD)
 			{"vlmcsd_enable", "", NULL, EVM_RESTART_VLMCSD},

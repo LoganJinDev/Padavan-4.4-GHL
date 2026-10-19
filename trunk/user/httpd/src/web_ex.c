@@ -886,7 +886,16 @@ validate_asp_apply(webs_t wp, int sid)
 		
 		if (!get_login_safe() && (v->event_mask & EVM_BLOCK_UNSAFE))
 			continue;
-		
+
+#if defined(APP_TTYD)
+		/* ttyd 登录凭据属于持久 root shell 凭据：仅允许 LAN/VPN 会话修改。
+		 * 这里按变量名显式判定，不复用 EVM_BLOCK_UNSAFE ——
+		 * 该宏是 (1ULL << 65)，位移超出 unsigned long long 宽度属未定义行为，
+		 * 与重启位做 & ~ 运算时可能把 EVM_RESTART_TTYD 一起抹掉。 */
+		if (!get_login_safe() && (!strcmp(v->name, "ttyd_user") || !strcmp(v->name, "ttyd_pass")))
+			continue;
+#endif
+
 		event_mask = v->event_mask & ~(EVM_BLOCK_UNSAFE);
 		
 		if (!strcmp(v->longname, "Group"))
@@ -938,7 +947,7 @@ validate_asp_apply(webs_t wp, int sid)
 		if (!strcmp(nvram_safe_get(name), value))
 			continue;
 		
-		if (!strcmp(v->name, "http_username") || !strcmp(v->name, "http_passwd")) {
+		if (!strcmp(v->name, "http_username") || !strcmp(v->name, "http_passwd") || !strcmp(v->name, "ttyd_pass")) {
 			if (strlen(value) == 0)
 				continue;
 		}
