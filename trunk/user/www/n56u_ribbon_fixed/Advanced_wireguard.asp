@@ -48,6 +48,7 @@ function showmenu(){
 showhide_div('allink', found_app_aliddns());
 showhide_div('zelink', found_app_zerotier());
 showhide_div('ddlink', found_app_ddnsto());
+showhide_div('frlink', found_app_frp());
 }
 
 function applyRule(){
@@ -134,6 +135,9 @@ function done_validating(action){
 								<li class="active">
                                     <a href="Advanced_wireguard.asp"><#menu5_35_1#></a>
                                 </li>
+								<li id="frlink" style="display:none">
+                                    <a href="Advanced_frp.asp"><#menu5_25_1#></a>
+                                </li>
                             </ul>
                         </div>
 								<div class="row-fluid">
@@ -191,6 +195,13 @@ function done_validating(action){
 										<th>对端ip:端口（格式 223.5.6.6:4900)</th>
 				<td>
 					<input type="text" class="input" name="wireguard_peerip" id="wireguard_peerip" style="width: 200px" value="<% nvram_get_x("","wireguard_peerip"); %>" />
+				</td>
+
+										</tr>
+										<tr>
+										<th>允许走隧道的网段（默认 0.0.0.0/0 全量，多个用逗号分隔）</th>
+				<td>
+					<input type="text" class="input" name="wireguard_allowedips" id="wireguard_allowedips" style="width: 320px" value="<% nvram_get_x("","wireguard_allowedips"); %>" />
 				</td>
 
 										</tr>

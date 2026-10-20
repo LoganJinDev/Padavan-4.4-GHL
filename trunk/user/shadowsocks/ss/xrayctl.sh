@@ -26,6 +26,7 @@
 # 用法（页面只会发这几种）：
 #   xrayctl.sh rules update [geosite:x geoip:y ...]   更新分类（异步，立即返回）
 #   xrayctl.sh rules list                             列出已装分类
+#   xrayctl.sh rules restore                          把分类从 flash 解回内存盘
 #   xrayctl.sh lookup <域名|IP|CIDR>                  查该目标命中哪些分类
 #   xrayctl.sh extract <geosite:x|geoip:y|x>          打印某个分类的条目
 #   xrayctl.sh restart                                重启 xray（等价面板「应用」）
@@ -36,6 +37,16 @@ UPDATER="/etc_ro/ss/ssrules_update.sh"
 RUN_LOG="/tmp/ssrules.run.log"
 LOCK_DIR="/tmp/xrayctl.lock"
 LOCK_TIMEOUT=900
+
+# 分类小文本的持久化落点。
+# /tmp 是内存盘，重启即失；分类原文 587 KB 压完约 116 KB，塞得进 flash。
+# 放子目录而不是 /etc/storage 根，与既有的 chinadns/ 、gfwlist/ 保持一致
+# （mtd_storage.sh 的 func_tarb 是 `find * ! -type d`，两层都收）。
+RULES_BLOB_DIR="/etc/storage/ss_rules"
+RULES_BLOB="$RULES_BLOB_DIR/rules.tar.bz2"
+BLOB_TMP="/tmp/ss_rules.tar.bz2"
+SAVE_LOG="/tmp/ss_rules.save.log"
+MTD_SAVE="/sbin/mtd_storage.sh"
 
 # ---------------------------------------------------------------------------
 # dbus 写入
@@ -82,6 +93,80 @@ summarize() {
 }
 
 # ---------------------------------------------------------------------------
+# 分类持久化 —— /tmp 是内存盘，重启即失，必须留一份在 flash
+# ---------------------------------------------------------------------------
+
+# 把 $RULES_DIR 打包压进 flash。返回 0 = 已落盘。
+#
+# ⚠️ 为什么必须看 mtd_storage.sh 的退出码，而不能像 chnroute / gfwlist 那样丢掉：
+# func_save() 判的是**整份 storage 压缩后**的大小（`fsz >= 16 && fsz <= mtd_part_size`，
+# 本机实测 mtd_part_size = 524288）。超限时它只打一行 "Error! Invalid storage final
+# data size" 然后 result=1 —— **一个字节都不写**，用户之后改的所有路由器配置全部
+# 无声地不落盘。这比「分类丢了」严重得多。
+#
+# 所以这里不做体积预测（预测要再跑一遍 tar+bzip2，在 MT7621 上要几秒到几十秒，
+# 而且未必准），而是照常写、看退出码、失败就把自己那份撤掉再存一次，
+# 让 storage 回到原样。chnroute 那种文本能再压 7 倍所以从不触限，
+# 我们这个包已经是 bzip2 产物，体积会原样计入总量，性质不同。
+persist_rules() {
+	[ -d "$RULES_DIR" ] || return 0
+
+	mkdir -p "$RULES_BLOB_DIR" 2>/dev/null
+	# 先进分类目录再打包，包内是相对路径（./geosite_cn.txt …），
+	# 解包时才能原样铺回 $RULES_DIR
+	( cd "$RULES_DIR" && tar cf - . ) 2>/dev/null | bzip2 -9 >"$BLOB_TMP" 2>/dev/null
+	if [ ! -s "$BLOB_TMP" ]; then
+		rm -f "$BLOB_TMP"
+		logger -t xrayctl "分类打包失败，本次未持久化"
+		return 1
+	fi
+	mv -f "$BLOB_TMP" "$RULES_BLOB"
+
+	if ! "$MTD_SAVE" save >"$SAVE_LOG" 2>&1; then
+		# 退出码非 0 = 尺寸超限 / mtd_write 失败 / storage 被锁，三种情况 flash
+		# 都没写进去。撤掉自己这份再存一次，免得把用户其它配置一直卡在超限状态
+		rm -f "$RULES_BLOB"
+		"$MTD_SAVE" save >/dev/null 2>&1
+		logger -t xrayctl "分类持久化失败，Storage 余量不足，已放弃（详见 $SAVE_LOG）"
+		return 1
+	fi
+	# 与 chnroute / gfwlist 的收尾一致，让刚读过的那批页缓存立刻释放
+	sync
+	echo 3 >/proc/sys/vm/drop_caches
+	return 0
+}
+
+# 按需把分类从 flash 解回内存盘。已经有内容就不动 —— 以 /tmp 里的为准，
+# 那可能是刚更新过的、比 flash 里新的版本。
+ensure_rules() {
+	if [ -n "$(ls "$RULES_DIR"/geosite_*.txt "$RULES_DIR"/geoip_*.txt 2>/dev/null)" ]; then
+		return 0
+	fi
+	# 从没更新过：静默返回，不算错误
+	[ -f "$RULES_BLOB" ] || return 1
+
+	mkdir -p "$RULES_DIR" 2>/dev/null
+	bzcat "$RULES_BLOB" 2>/dev/null | tar xf - -C "$RULES_DIR" 2>/dev/null
+	# 成败看落盘结果，不看管道退出码 —— 管道的 $? 只反映最后一环
+	if [ -n "$(ls "$RULES_DIR"/geosite_*.txt "$RULES_DIR"/geoip_*.txt 2>/dev/null)" ]; then
+		logger -t xrayctl "已从 flash 恢复分类到 $RULES_DIR"
+		return 0
+	fi
+	logger -t xrayctl "分类包 $RULES_BLOB 解包失败，分流规则将退化为只按 IP/兜底匹配"
+	return 1
+}
+
+# rules restore —— 供开机路径（shadowsocks.sh 生成 xray 配置之前）与手工调用。
+# 刻意不写 dbus：开机时没人在看页面，写了只会覆盖上一次的操作结果
+cmd_rules_restore() {
+	if ensure_rules; then
+		echo "分类已就绪：$(summarize)"
+	else
+		echo "无可恢复的分类包（$RULES_BLOB 不存在），请执行「更新分类」"
+	fi
+}
+
+# ---------------------------------------------------------------------------
 # rules update —— 更新分类小文本（异步）
 # ---------------------------------------------------------------------------
 
@@ -91,7 +176,14 @@ do_update() {
 	_rc=$?
 	_s=$(summarize)
 	if [ $_rc -eq 0 ]; then
-		end_run "更新完成：$_s"
+		# 更新成功就把分类压进 flash，否则重启后 $RULES_DIR 一空，分流规则整份失效。
+		# 持久化失败不能算成更新失败 —— 分类本身是好的，只是重启后会丢，
+		# 状态文案要如实区分这两种情况
+		if persist_rules; then
+			end_run "更新完成并已持久化：$_s"
+		else
+			end_run "更新完成，但持久化失败（重启后会丢）：$_s"
+		fi
 	else
 		end_run "更新失败(退出码 $_rc)：$_s，详见 /tmp/ssrules.log"
 	fi
@@ -133,8 +225,10 @@ cmd_rules_update() {
 # ---------------------------------------------------------------------------
 
 cmd_rules_list() {
+	# 重启后内存盘是空的，先解回来再列，否则用户会以为分类丢了
+	ensure_rules
 	if [ ! -d "$RULES_DIR" ]; then
-		end_run "分类目录不存在，请先执行「更新分类」"
+		end_run "分类未安装，请先执行「更新分类」"
 		return 0
 	fi
 	_out=""
@@ -168,6 +262,8 @@ valid_target() {
 
 # lookup <域名|IP|CIDR>
 cmd_lookup() {
+	# 同上：重启后 /tmp 是空的，不先解回来查什么都是「未命中任何已装分类」
+	ensure_rules
 	_t="$1"
 	if [ -z "$_t" ]; then
 		end_run "请输入域名或 IP"
@@ -262,6 +358,7 @@ cmd_lookup() {
 
 # extract <geosite:x | geoip:y | x>
 cmd_extract() {
+	ensure_rules
 	_spec="$1"
 	if [ -z "$_spec" ]; then
 		end_run "请输入分类，如 geosite:cn"
@@ -326,6 +423,9 @@ rules)
 		;;
 	list)
 		cmd_rules_list
+		;;
+	restore)
+		cmd_rules_restore
 		;;
 	*)
 		end_run "未知子命令：rules $1"

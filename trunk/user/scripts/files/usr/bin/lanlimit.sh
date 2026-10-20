@@ -94,12 +94,23 @@ lan_ports() {
 # htb 的 dump 会把自己的 default 类号一并打出来，本脚本恒用 99，SQM 的 htb 用 10，
 # cake / tbf 的 root 压根不是 htb。靠这个标记就能精确区分归属，不必去复刻 SQM 的
 # 「runmode -> 接口」映射（那份映射在上游一改就会失配，反而变成新的隐患）
+#
+# ⚠️ default 类号必须按十六进制比，不能按十进制字面量比。
+# tc 解析 default/classid 用的是 16 进制：写 `default 99` 实得 0x99（=153），
+# dump 回来也是 `default 0x99`。早年这里直接比字符串 "default 99" 永远 NOMATCH，
+# 后果是 do_stop 认不出自己的树 -> 不删 -> reload 时 add 全部 File exists ->
+# 旧速率（如 2048Kbit）一直残留，改限速值永不生效（2026-10-19 设备实测）。
+# 剥掉 0x/0X 前缀后 "0x99" 与 "99" 归一；153 是同类的十进制写法，一并认。
 port_is_ours() {
-	local p q
+	local p q d
 	p="$1"
 	q="$(tc qdisc show dev "$p" root 2>/dev/null)"
 	case "$q" in *"htb 1:"*) ;; *) return 1 ;; esac
-	case "$q" in *"default 99"*) return 0 ;; esac
+	d="${q##*default }"
+	d="${d%% *}"
+	d="${d#0x}"
+	d="${d#0X}"
+	case "$d" in 99|153) return 0 ;; esac
 	return 1
 }
 
@@ -231,9 +242,14 @@ hwnat_off() {
 	# 只在第一次真正改动时记录原值。连当时的 SQM 状态一起记下来，
 	# 还原时靠它判断这段时间里 hw_nat 有没有易主
 	if [ -z "$(nvram get lanlimit_prev_hwnat)" ]; then
-		nvram set lanlimit_prev_hwnat "${hw:-0}"
-		nvram set lanlimit_prev_sfe "${se:-0}"
-		nvram set lanlimit_prev_sqm "$(nvram get sqm_enable 2>/dev/null)"
+		# ⚠️ 下面三行必须写成 name=value。Padavan 的 nvram applet 只认等号形式，
+		# 写成 `nvram set name value` 会被静默当成 `nvram unset name` ——
+		# 原值存不下、已有的值还会被一起抹掉，而退出码依然是 0，
+		# 从外部完全看不出异常。2026-10-19 设备实测根因：关掉 SQM 后
+		# 硬件加速再也回不来（hwnat_restore 读到空值直接 return），就是这三行。
+		nvram set lanlimit_prev_hwnat="${hw:-0}"
+		nvram set lanlimit_prev_sfe="${se:-0}"
+		nvram set lanlimit_prev_sqm="$(nvram get sqm_enable 2>/dev/null)"
 	fi
 
 	nvram set hw_nat_mode=0
@@ -246,8 +262,8 @@ hwnat_off() {
 
 # 还原硬件加速。不猜 SQM 想要什么，只把「我接管时看到的值」原样还回去；
 # 唯一例外是接管之后 SQM 被开关过 —— 那说明 hw_nat 已归 SQM 管，硬写回
-# 会和它抢，此时只还 SFE。重新加载 hw_nat 交给 /sbin/restart_firewall，
-# 它会带上正确的 VLAN 参数，比自己 modprobe 可靠
+# 会和它抢，此时只还 SFE。重新加载 hw_nat 交给 rc（会带上正确的 VLAN 参数，
+# 比自己 modprobe 可靠），但必须走通知那条路径 —— 见下面的说明
 hwnat_restore() {
 	local ph ps psm sqm
 	ph="$(nvram get lanlimit_prev_hwnat)"
@@ -276,9 +292,23 @@ hwnat_restore() {
 	nvram unset lanlimit_prev_sqm
 	nvram commit
 	log "已还原硬件加速（hw_nat_mode=$ph）"
-	# 原本是开着的，要把 hw_nat 模块重新加载起来
+	# 原本是开着的，要把 hw_nat 模块重新加载起来。
+	#
+	# ⚠️ 必须走 rc 的**通知**机制，不能执行 /sbin/restart_firewall。
+	# 那个文件是 rc 的 symlink，但 shell 执行它走的是 main() 的 argv[0] 派发
+	# （rc.c:1705），只调 restart_firewall()；带 reload_nat_modules() 的是
+	# 通知派发那条（rc.c:1333 的 RCN_RESTART_FIREWALL 分支）。
+	# 走错路径的症状很隐蔽：nvram 值全对、命令也没报错，但模块根本没加载，
+	# 硬件加速静默不回来（2026-10-19 设备实测：lsmod 里查不到 hw_nat）。
 	if [ "$ph" != "0" ]; then
-		restart_firewall >/dev/null 2>&1 &
+		if [ -d /tmp/rc_notification ]; then
+			: >/tmp/rc_notification/restart_firewall
+			kill -USR1 1 2>/dev/null
+		else
+			# 兜底：通知目录还不存在（rc 未就绪）时退回直接调用，
+			# 至少让 nvram 值生效，模块等下次防火墙重启再加载
+			restart_firewall >/dev/null 2>&1 &
+		fi
 	fi
 	return 0
 }

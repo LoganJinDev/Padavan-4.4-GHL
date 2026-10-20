@@ -1053,7 +1053,10 @@
 			{"wireguard_localkey", "", NULL, EVM_RESTART_WIREGUARD},
 			{"wireguard_peerkey", "", NULL, EVM_RESTART_WIREGUARD},
 			{"wireguard_peerip", "", NULL, EVM_RESTART_WIREGUARD},
-			{"wireguard_localip", "", NULL, EVM_RESTART_WIREGUARD},
+			/* allowed-ips 既是给 peer 的加密路由，也是 wireguard.sh 铺内核路由的
+			 * 依据（WireGuard 自己不会往路由表插条目）；留空则脚本回落 0.0.0.0/0。
+			 * 原先此处重复了一行 wireguard_localip（上游笔误），已移除。 */
+			{"wireguard_allowedips", "", NULL, EVM_RESTART_WIREGUARD},
 			{0,0,0,0}
 		};
 #endif

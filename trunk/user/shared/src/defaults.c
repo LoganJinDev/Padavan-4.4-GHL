@@ -860,6 +860,8 @@ struct nvram_pair router_defaults[] = {
 	{ "wireguard_localkey", "" },
 	{ "wireguard_peerip", "" },
 	{ "wireguard_peerkey", "" },
+	/* 允许走隧道的目标网段，逗号分隔；留空时脚本回落 0.0.0.0/0（全量） */
+	{ "wireguard_allowedips", "0.0.0.0/0" },
 #endif
 
 #if defined(APP_SQM)

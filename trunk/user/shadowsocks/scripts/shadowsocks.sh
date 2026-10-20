@@ -125,6 +125,12 @@ gen_config_file() {
 		# 两种节点共用 genxrayconfig.lua：它按节点 type 字段自动分 vmess/vless 协议，
 		# 并且带 routing 段（分流规则）、ACL、FakeDNS、REALITY 支持。
 		# 旧版 genv2config.lua 不生成 routing，用它等于把分流规则整份丢掉 —— 已废弃。
+		#
+		# 分类小文本放在 /tmp/ss_rules（内存盘），重启后是空的。这里在生成配置之前
+		# 把它从 flash 解回来，否则 genxrayconfig.lua 读不到 geosite_*/geoip_*.txt，
+		# routing 段会退化成只剩兜底规则 —— 开机后分流静默失效，页面却看不出来。
+		# 恢复是幂等的（已有内容就跳过），失败也不阻断，最多退回「没分类」的旧行为。
+		[ -x /etc_ro/ss/xrayctl.sh ] && /etc_ro/ss/xrayctl.sh rules restore >/dev/null 2>&1
 		v2ray_enable=1
 		if [ "$2" = "1" ]; then
 			lua /etc_ro/ss/genxrayconfig.lua $1 udp 1080 >/tmp/v2-ssr-reudp.json
