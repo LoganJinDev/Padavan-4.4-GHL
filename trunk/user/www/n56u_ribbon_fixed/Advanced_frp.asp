@@ -38,15 +38,23 @@ $j(document).ready(function() {
 function initial(){
 	show_banner(2);
 	// show_menu(L1, L2, L3)：L2 是左侧子菜单下标，要对着 menuL2_title 数。
-	// 该数组尾部依次 push：18=阿里云盘(aldriver)、19=SQM流控、20=frp内网穿透，
-	// 故 frp 必须是 20。原先写成 18，左侧「frp 内网穿透」不会被加粗高亮。
-	show_menu(5,20);
+	// frp 已并入「穿透服务」(menu5_30)，与 aliddns/zerotier/ddnsto/wireguard 同组，
+	// 该组对应 menuL2 下标 17（紧随 smartdns/adguardhome 之后）。
+	show_menu(5,17,0);
+	showmenu();
 	show_footer();
 
 fill_status(frpc_status());
 fill_status2(frps_status());
 	if (!login_safe())
 		textarea_scripts_enabled(0);
+}
+
+function showmenu(){
+showhide_div('allink', found_app_aliddns());
+showhide_div('zelink', found_app_zerotier());
+showhide_div('ddlink', found_app_ddnsto());
+showhide_div('wilink', found_app_wireguard());
 }
 
 function textarea_scripts_enabled(v){
@@ -142,6 +150,25 @@ function done_validating(action){
 						<div class="box well grad_colour_dark_blue">
 							<h2 class="box_head round_top">Frp - 内网穿透</h2>
 							<div class="round_bottom">
+								<div>
+                            <ul class="nav nav-tabs" style="margin-bottom: 10px;">
+								<li id="allink" style="display:none">
+                                    <a href="Advanced_aliddns.asp"><#menu5_23_1#></a>
+                                </li>
+								<li id="zelink" style="display:none">
+                                    <a href="Advanced_zerotier.asp"><#menu5_32_1#></a>
+                                </li>
+								<li id="ddlink" style="display:none">
+                                    <a href="Advanced_ddnsto.asp"><#menu5_34_1#></a>
+                                </li>
+								<li id="wilink" style="display:none">
+                                    <a href="Advanced_wireguard.asp"><#menu5_35_1#></a>
+                                </li>
+								<li class="active">
+                                    <a href="Advanced_frp.asp"><#menu5_25_1#></a>
+                                </li>
+                            </ul>
+                        </div>
 								<div class="row-fluid">
 									<div id="tabMenu" class="submenuBlock"></div>
 									<div class="alert alert-info" style="margin: 10px;">frp 是一个可用于内网穿透的高性能的反向代理应用，支持 tcp, udp 协议，为 http 和 https 应用协议提供了额外的能力，且尝试性支持了点对点穿透。

@@ -2,10 +2,14 @@
 #
 # ssrcrules_update.sh —— 分流规则分类小文本更新
 #
-# 产物落 /tmp/ss_rules/（内存盘；512KB 的 /etc/storage 放不下）：
+# 产物落 /tmp/ss_rules/（内存盘，读起来快）：
 #   geosite_<分类>.txt   域名类，每行 domain:x / full:x / keyword:x，或带 :@属性 后缀
 #   geoip_<分类>.txt     IP 类，每行裸 CIDR
 # 这些文件由 xrayroute.lua 在生成 xray 配置时展开成具体规则。
+#
+# 本脚本只管写 /tmp。落 flash 由调用方 xrayctl.sh 负责（persist_rules）：
+# 全部 13 个分类约 587 KB，bzip2 后约 116 KB，能塞进 512 KB 的 /etc/storage，
+# 但 storage 是所有配置共用的，所以要连 mtd_storage.sh 的退出码一起判 —— 见那边注释。
 #
 # 用法：
 #   ssrcrules_update.sh                  更新默认清单

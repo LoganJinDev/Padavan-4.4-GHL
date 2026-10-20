@@ -355,7 +355,7 @@ function do_apply(){
 }
 
 function do_rules_update(){
-	if (!confirm('更新分类小文本到 /tmp/ss_rules？\n需要联网，耗时约 1-3 分钟，期间请勿断电。')) {
+	if (!confirm('更新分类小文本？\n需要联网，耗时约 1-3 分钟，期间请勿断电。\n更新完成后会自动存入 flash，重启后自动恢复。')) {
 		return;
 	}
 	XR.status($j('#status_line')[0], '正在更新分类…', true);
@@ -505,7 +505,8 @@ function do_custom_update(){
                                     <div style="border-top:1px solid #ddd; padding-top:10px; margin-top:6px;">
                                         <h4 style="margin-bottom:8px;">分类小文本（geosite / geoip）</h4>
                                         <div style="font-size:13px; color:#666; margin-bottom:8px;">
-                                            分类库放在 /tmp（内存盘），重启会丢，需要时重新更新。
+                                            分类库更新后会自动存入 flash（约 116 KB），重启后由开机流程自动解回内存盘，无需每次开机重新下载。<br>
+                                            若 flash 余量不足导致持久化失败，状态栏会明确提示，此时重启后需要重新更新。
                                         </div>
                                         <table width="100%" cellpadding="4" cellspacing="0" class="table">
                                             <tr>
