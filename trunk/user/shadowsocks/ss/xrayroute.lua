@@ -353,7 +353,9 @@ function M.build_acl(resolve)
 						type = "field",
 						source = ips,
 						network = "tcp,udp",
-						outboundTag = resolve(a.outbound)
+						-- 第二个参数是「前置代理」：非空时解析器会把该出站链到前置节点之后，
+						-- 返回的是另一个（形如 node_5_via_node_3 的）出站 tag。
+						outboundTag = resolve(a.outbound, a.preproxy)
 					}
 				end
 			end
@@ -394,7 +396,9 @@ local function apply_one_rule(rules, fakedns_buckets, resolve, id)
 	if #domain == 0 and #ip == 0 then
 		return false
 	end
-	local tag = resolve(r.outbound)
+	-- 第二个参数是「前置代理」（面板同名下拉框，存节点序号）。解析器会据此把该出站
+	-- 链到前置节点之后，返回另一个出站 tag；没设前置代理时返回值与旧行为一致。
+	local tag = resolve(r.outbound, r.preproxy)
 	local net = (r.network and r.network ~= "") and r.network or nil
 	add_rule(rules, tag, net, domain, "domain")
 	local has_ip = add_rule(rules, tag, net, ip, "ip")
@@ -406,7 +410,8 @@ local function apply_one_rule(rules, fakedns_buckets, resolve, id)
 	return has_ip
 end
 
--- 生成 routing 段。参数 resolve 是调用方给的解析函数：resolve(期望tag) -> 实际tag
+-- 生成 routing 段。参数 resolve 是调用方给的解析函数：resolve(期望tag, 前置代理) -> 实际tag
+-- 第二个参数可为 nil（未设前置代理），解析器必须容忍
 --
 -- 返回两个值：
 --   1. routing 表 —— 无任何规则时为 nil（调用方据此不写 routing 段，退化成旧行为）

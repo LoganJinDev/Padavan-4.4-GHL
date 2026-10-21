@@ -7,6 +7,9 @@
 
 	在原有「单出站」基础上增加：
 		· 多出站：default(全局节点) / direct / block / node_<序号>(规则按需引用)
+		· 前置代理：分流规则 / 访问控制里的「前置代理」字段非空时，该规则的基础出站
+		  会链到前置节点之后（streamSettings.sockopt.dialerProxy），并生成一个
+		  形如 node_5_via_node_3 的独立出站，见 make_resolver
 		· routing 段：由 xrayroute.lua 生成，顺序为 [ACL 规则] → [分流规则] → [兜底 default]
 		· fakeDns：xray_fakedns=1 时启用；勾了 FakeDNS 的分流规则的域名才走假 IP，
 		  一条都没勾时对所有域名生效（见 xrayroute.lua 的域名收集与 build_dns）
@@ -67,7 +70,13 @@ local function build_inbound(fakedns_on)
 end
 
 -- 按节点字段生成 vmess 或 vless 出站。字段映射沿用原实现，勿改
-local function build_node_outbound(server, tag)
+--
+-- dialer_proxy（可选）：前置代理出站的 tag。非空时本出站不自己直连目标服务器，
+--   而是把 TCP 拨号交给那个出站去完成 —— 即「本节点挂在前置节点后面」的链式代理，
+--   对应面板上「分流规则 / 访问控制」里的「前置代理」。
+--   xray 的字段是 streamSettings.sockopt.dialerProxy。
+--   传 nil 时 sockopt 整段不生成（而不是生成空表），与加这个参数之前逐字节一致。
+local function build_node_outbound(server, tag, dialer_proxy)
 	-- TLS / REALITY 两段先算好再塞进表里。直接写在表构造式里的话每段都是一串 and/or
 	-- 三元，把整个函数的圈复杂度顶到远超门禁（lizard 报 CCN 50+），拆出来既降复杂度也好读。
 	local tls_settings, reality_settings
@@ -190,6 +199,11 @@ local function build_node_outbound(server, tag)
 					Host = server.splithttp_host
 				} or nil,
 			} or nil,
+			-- 前置代理：sockopt.dialerProxy 指向另一个出站的 tag，xray 会先用那个出站
+			-- 建立到本出站服务器的 TCP 连接，再由本出站跑自己的协议握手。
+			-- 注意 tag 里不能出现反斜杠（本文件头部第 14-15 行：产物会被
+			-- sed -i 's/\\//g' 剥掉所有反斜杠，反斜杠会被无声吃掉导致 tag 对不上）。
+			sockopt = dialer_proxy and { dialerProxy = dialer_proxy } or nil,
 		},
 		mux = {
 			enabled = (server.mux == "1") and true or false,
@@ -207,23 +221,80 @@ end
 -- 出站解析器：把规则里写的 tag 变成真实存在的出站
 --   default / direct / block 直接可用
 --   node_<序号> 按需构建；指向全局节点时复用 default；未知或不支持的节点回落 default
-local function make_resolver(outbounds, server_section)
+--
+-- 第二个参数 preproxy 是「前置代理」（面板上分流规则 / 访问控制的同名下拉框）：
+--   非空时把基础出站【链到】前置节点之后，并另建一个独立出站返回给规则用，
+--   而不是就地改基础出站 —— 同一个基础出站会被多条规则引用（还有 routing 的兜底
+--   规则写死 "default"），就地改会让没设前置代理的规则一起被牵连。
+local function make_resolver(outbounds, server_section, server)
 	local known = { default = true, direct = true, block = true }
-	return function(tag)
+	-- 节点缓存：一个序号可能被「基础出站」和「前置出站」各要一次，而 load_node
+	-- 每次都要 fork 一个 dbus 进程去读 nvram，缓存掉能省掉一半的进程开销。
+	-- 用 false 记「读过但读不到」，与 nil 区分开，避免反复重试。
+	local cache = { [tostring(server_section)] = server }
+	local function node_at(idx)
+		local key = tostring(idx)
+		if cache[key] == nil then
+			cache[key] = load_node(key) or false
+		end
+		return cache[key] or nil
+	end
+
+	-- 把 tag 解析成真实存在的出站 tag，必要时现场构建并追加进出站表
+	local function ensure(tag)
 		if known[tag] then
 			return tag
 		end
 		local idx = tag and tag:match("^node_(%d+)$")
-		if not idx or idx == server_section then
+		if not idx then
 			return "default"
 		end
-		local node = load_node(idx)
+		if idx == tostring(server_section) then
+			-- 指向全局节点：复用已有的 default 出站，不重复建
+			return "default"
+		end
+		local node = node_at(idx)
 		if not node or not buildable(node) then
 			return "default"
 		end
 		outbounds[#outbounds + 1] = build_node_outbound(node, tag)
 		known[tag] = true
 		return tag
+	end
+
+	return function(tag, preproxy)
+		local base = ensure(tag)
+		-- direct / block 是本地出站（freedom / blackhole），既没有可挂 sockopt 的
+		-- 传输层，链前置代理也没有任何意义，直接返回
+		if base == "direct" or base == "block" then
+			return base
+		end
+		-- 前置代理存的是节点序号（面板下拉框的 value 是 node_<n> 里的 <n>）。
+		-- 空串 / 非数字（老数据没有这个字段时就是 nil）一律视为「不使用前置代理」，
+		-- 这样升级固件后旧规则的行为与升级前完全一致。
+		local pidx = tostring(preproxy or "")
+		if not pidx:match("^%d+$") then
+			return base
+		end
+		local ptag = ensure("node_" .. pidx)
+		-- 前置就是基础出站本身 ⇒ 自链。xray 会把这种循环依赖判为配置错误并拒绝
+		-- 加载【整份配置】，连分流带节点一起失效，所以必须在这里挡掉。
+		if ptag == base then
+			return base
+		end
+		-- 同一个 (基础, 前置) 组合可能被多条规则引用，复用已经建好的那个出站
+		local vtag = base .. "_via_" .. ptag
+		if known[vtag] then
+			return vtag
+		end
+		-- 基础出站若是 default，它对应的节点就是全局节点 server（已在缓存里）
+		local src = (base == "default") and server or node_at(base:match("^node_(%d+)$"))
+		if not src or not buildable(src) then
+			return base
+		end
+		outbounds[#outbounds + 1] = build_node_outbound(src, vtag, ptag)
+		known[vtag] = true
+		return vtag
 	end
 end
 
@@ -283,7 +354,7 @@ local function main()
 		}
 	}
 
-	local resolve = make_resolver(outbounds, server_section)
+	local resolve = make_resolver(outbounds, server_section, server)
 	local routing, fakedns_domains = xrayroute.build_routing(resolve)
 
 	-- 传入连接。用新式 inbounds 数组键，不用 deprecated 的 inbound/inboundDetour：

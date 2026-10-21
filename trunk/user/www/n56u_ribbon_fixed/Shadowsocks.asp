@@ -491,7 +491,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 					alert("脚本执行失败！！！")
 				},
 				success: function (response) {
-					setTimeout("dtime();$j('#table99').bootstrapTable('refresh');document.getElementById('btn_update_link').value='更新订阅';",1000);
+					setTimeout("dtime();$j('#table99').bootstrapTable('refresh');document.getElementById('btn_update_link').value='手动更新订阅';",1000);
 				}
 			});
 		}
@@ -1758,6 +1758,10 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 																<option value="0">全部走代理</option>
 																<option value="1">指定IP走代理</option>
 															</select>
+															<span class="help-block" style="margin: 4px 0 0 0;">
+																「指定IP走代理」的名单在「<b>规则管理</b>」标签页的「<b>强制走SS代理的LAN IP</b>」里填，一行一个 IP 或网段。<br>
+																「全部走代理」时，「规则管理」里的「<b>不走SS代理的LAN IP</b>」是例外名单，写进去的 IP 不走代理。
+															</span>
 														</td>
 													</tr>
 													<tr id="row_pdnsd_enable">
@@ -1839,13 +1843,20 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 											<!--节点列表-->
 											<div id="wnd_ss_add">
 												<table width="100%" cellpadding="4" cellspacing="0" class="table">
-													<div class="alert alert-info" style="margin: 10px;"> 添加完节点地址后，请先点击上方的 “应用” 再点击 “更新节点” 按钮更新所订阅的节点。</div>
+													<div class="alert alert-info" style="margin: 10px;"> 添加或修改订阅地址后，请先点下方的 “保存并应用”（等同于右上角的 “应用”）保存，再点 “手动更新订阅” 拉取节点。</div>
 													<tr>
 														<td colspan="3">
 															<i class="icon-hand-right"></i> <a href="javascript:spoiler_toggle('script7')"><span>点击输入节点订阅地址：(一行一个地址)</span></a>
 															<div id="script7" style="display: none">
 																<textarea rows="8" wrap="off" spellcheck="false" maxlength="314571" class="span12" name="scripts.ss_dlink.sh" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.ss_dlink.sh",""); %></textarea>
 															</div>
+																<div style="margin-top: 6px;">
+																	<input type="button" class="btn btn-primary" value="保存并应用" onclick="applyRule();">
+																	<span class="help-block" style="margin: 4px 0 0 0;">
+																		保存本页全部设置（含上面的订阅地址）并重启科学上网服务，等同于右上角的「应用」按钮。<br>
+																		改完订阅地址先点这里保存，再点「手动更新订阅」拉取节点。
+																	</span>
+																</div>
 														</td>
 													</tr>
 													<tr id="ss_schedule_enable_tr">
@@ -1899,7 +1910,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 																<option value="c">订阅节点</option>
 															</select>
 															<input type="button" id="btn_add_link" class="btn btn-info" value="添加/导入">
-															<input type="button" id="btn_update_link" class="btn btn-info" value="更新节点" onclick="dlink();">
+															<input type="button" id="btn_update_link" class="btn btn-info" value="手动更新订阅" onclick="dlink();">
 															<input type="button" id="btn_ping_link" class="btn btn-info" value="ping所选">
 															<input type="button" id="btn_aping_link" class="btn btn-info" value="ping全部">
 															<input type="button" id="btn_del_link" class="btn btn-danger" value="删除节点">

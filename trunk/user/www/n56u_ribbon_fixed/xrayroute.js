@@ -303,6 +303,51 @@
 		el.innerHTML = html;
 	}
 
+	// 往 <select> 里填「前置代理」选项。
+	//
+	// 与 fillSelect 有三处刻意的不同：
+	//   ① 可选项只有真实节点 —— 前置代理的作用是「基础出站先经它拨号出去」，
+	//      default / direct / block 都不行：default 指向的就是全局节点（与基础出站
+	//      撞成自链）、direct 与 block 是本地出站（freedom / blackhole），
+	//      没有可挂 sockopt 的传输层。genxrayconfig.lua 的 make_resolver 只认
+	//      ^%d+$ 的节点序号，其它值一律当作「不使用」。
+	//   ② option 的 value 是【节点序号】而不是 node_<n> 这种 tag —— 引擎读的就是
+	//      序号（dbus 里的字段值直接参与 "node_" .. pidx 拼接）。
+	//   ③ 第一项固定是空值「不使用」，且 excludeTag 指向的项会被排掉：
+	//      把基础出站自己选成前置代理就是自链，xray 会判为循环依赖并拒绝加载
+	//      【整份配置】，连分流带节点一起失效。引擎里挡了一道，面板这里再挡一道，
+	//      用户就不会选到这种「选了也没效果」的组合。
+	function fillPreSelect(el, cur, excludeTag) {
+		if (!el) {
+			return;
+		}
+		// 归一成字符串再比：值正常来自 $('#preproxy').val()（字符串）或 dbus 里的 JSON，
+		// 但手改过 dbus 的话可能是个数字，而 '3' === 3 为假 —— 那会静默丢掉用户的选择
+		cur = (cur === null || cur === undefined) ? '' : String(cur);
+
+		var ns = nodes();
+		var body = '';
+		var hit = false;
+		for (var i = 0; i < ns.length; i++) {
+			if (ns[i].tag === excludeTag || !/^node_\d+$/.test(ns[i].tag)) {
+				continue;
+			}
+			var idx = ns[i].tag.substring(5); // 'node_'.length
+			var sel = (idx === cur);
+			if (sel) {
+				hit = true;
+			}
+			body += '<option value="' + esc(idx) + '"' + (sel ? ' selected="selected"' : '') + '>' +
+				esc(ns[i].label) + '</option>';
+		}
+		// 没有任何节点命中 cur（cur 为空、或它被 excludeTag 排掉、或那个节点已删除）时，
+		// 必须【显式】把「不使用」标成选中。只靠浏览器「无 selected 就取第一项」的默认
+		// 行为虽然也能让 .val() 返回空串，但那是隐式契约 —— syncPre() 与 save() 里的
+		// 自链校验都读 .val()，显式标记才能让这条不变式可断言
+		el.innerHTML = '<option value=""' + (hit ? '' : ' selected="selected"') +
+			'>不使用（直接连接）</option>' + body;
+	}
+
 	// ---------------------------------------------------------------- 执行命令
 
 	// POST 后轮询 dbus 状态。
@@ -427,6 +472,7 @@
 		nodes: nodes,
 		nodeLabel: nodeLabel,
 		fillSelect: fillSelect,
+		fillPreSelect: fillPreSelect,
 		runCmd: runCmd,
 		post: post,
 		waitIdle: waitIdle,

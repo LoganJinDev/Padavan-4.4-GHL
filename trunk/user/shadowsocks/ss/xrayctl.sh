@@ -28,7 +28,8 @@
 #   xrayctl.sh rules list                             列出已装分类
 #   xrayctl.sh rules restore                          把分类从 flash 解回内存盘
 #   xrayctl.sh lookup <域名|IP|CIDR>                  查该目标命中哪些分类
-#   xrayctl.sh extract <geosite:x|geoip:y|x>          打印某个分类的条目
+#   xrayctl.sh extract <geosite:x|geoip:y|x>          打印某个分类的条目；
+#                                                     未装时按需下载（后台跑，不阻塞页面）
 #   xrayctl.sh restart                                重启 xray（等价面板「应用」）
 #
 
@@ -190,29 +191,42 @@ do_update() {
 	rm -rf "$LOCK_DIR"
 }
 
+# 抢更新锁。0=拿到 1=已被占着 2=建不出锁目录（/tmp 满或只读）
+#
 # 陈旧锁检查：上次异常退出（断电、被 kill）会留下锁目录，让按钮永久卡在
 # 「已在更新中」。用锁目录里的时间戳判断，超过 LOCK_TIMEOUT 秒就当作失效清掉。
-cmd_rules_update() {
-	if [ -d "$LOCK_DIR" ]; then
-		if [ -f "$LOCK_DIR/ts" ]; then
-			_now=$(date +%s)
-			_st=$(cat "$LOCK_DIR/ts" 2>/dev/null)
-			if [ -n "$_st" ] && [ $((_now - _st)) -gt $LOCK_TIMEOUT ]; then
-				rm -rf "$LOCK_DIR"
-			fi
+#
+# 为什么抽成函数：rules update 与 extract 的按需下载共用同一把锁 —— 两者都在
+# 跑 ssrcrules_update.sh 往 $RULES_DIR 写文件，并发会互相踩（一个正在 tar 打包，
+# 另一个往里写，压出来的包是半截的，而 persist_rules 看不出这一点）。
+acquire_lock() {
+	if [ -d "$LOCK_DIR" ] && [ -f "$LOCK_DIR/ts" ]; then
+		_now=$(date +%s)
+		_st=$(cat "$LOCK_DIR/ts" 2>/dev/null)
+		if [ -n "$_st" ] && [ $((_now - _st)) -gt $LOCK_TIMEOUT ]; then
+			rm -rf "$LOCK_DIR"
 		fi
 	fi
-
 	if [ -d "$LOCK_DIR" ]; then
+		return 1
+	fi
+	mkdir -p "$LOCK_DIR" 2>/dev/null || return 2
+	date +%s >"$LOCK_DIR/ts"
+	return 0
+}
+
+cmd_rules_update() {
+	acquire_lock
+	case $? in
+	1)
 		end_run "已在更新中，请稍候…"
 		return 0
-	fi
-
-	mkdir -p "$LOCK_DIR" 2>/dev/null || {
+		;;
+	2)
 		end_run "无法创建锁目录 $LOCK_DIR"
 		return 0
-	}
-	date +%s >"$LOCK_DIR/ts"
+		;;
+	esac
 
 	begin_run "正在更新分类…"
 	# 三个流全部重定向并丢给 /dev/null：后台任务不能握着 httpd 的
@@ -258,6 +272,24 @@ cmd_rules_list() {
 # 所以客户端与这里各校验一遍，这里是最后一道。
 valid_target() {
 	printf '%s' "$1" | grep -qE '^[A-Za-z0-9._:@!/-]+$'
+}
+
+# spec → /tmp 里的落点文件。
+# 裸名（不带 geosite:/geoip: 前缀）优先当域名类 —— 绝大多数分类都是域名类；
+# 只有在 geoip 那份确实存在而 geosite 那份不存在时才取 geoip。
+# 判「哪个存在」而不是「猜一个」，是为了让「已装但类型写错」也能被查出来。
+resolve_spec() {
+	case "$1" in
+	geosite:*) printf '%s' "$RULES_DIR/geosite_${1#geosite:}.txt" ;;
+	geoip:*)   printf '%s' "$RULES_DIR/geoip_${1#geoip:}.txt" ;;
+	*)
+		if [ -f "$RULES_DIR/geoip_$1.txt" ] && [ ! -f "$RULES_DIR/geosite_$1.txt" ]; then
+			printf '%s' "$RULES_DIR/geoip_$1.txt"
+		else
+			printf '%s' "$RULES_DIR/geosite_$1.txt"
+		fi
+		;;
+	esac
 }
 
 # lookup <域名|IP|CIDR>
@@ -356,6 +388,58 @@ cmd_lookup() {
 	fi
 }
 
+# 生成某个已装分类的摘要文本（前 20 条）。纯函数：只 printf，不碰 dbus 也不碰锁
+spec_summary() {
+	# 剥掉 wc 可能补的前导空格：这是本文件唯一一处把 wc 结果拼进【字符串】的地方，
+	# 别处（summarize / cmd_rules_list）都是喂给 $(( )) 做算术，空格会被自动吃掉。
+	# 不剥的话状态栏会显示成「共        2 条」。busybox 的 wc 不加宽，
+	# 但剥一下零成本，也让这条文案不依赖 wc 的具体实现。
+	_n=$(wc -l <"$2" | tr -d ' \t')
+	_head=$(head -n 20 "$2" | tr '\n' ' ')
+	if [ "$_n" -gt 20 ]; then
+		printf '%s' "$1 共 $_n 条，前 20 条：$_head"
+	else
+		printf '%s' "$1 共 $_n 条：$_head"
+	fi
+}
+
+# 按需安装一个分类。在后台子 shell 里跑（三个流已被调用方重定向走）。
+# 只下一个分类，复用 ssrcrules_update.sh 的「指定分类」模式，不重复实现下载链路。
+#
+# ⚠️ 判据是产物文件在不在，不是 $?：ssrules_update.sh 的 main() 最后一条命令是
+# log()，退出码恒为 0 —— 看 $? 会把「下载失败」当成成功，然后对着一个不存在的
+# 文件报「共 0 条」，用户还以为装上了。
+do_extract_install() {
+	_spec="$1"
+	case "$_spec" in
+	geosite:* | geoip:*)
+		"$UPDATER" "$_spec" >>"$RUN_LOG" 2>&1
+		;;
+	*)
+		# 裸名：先按域名类试，没落地再按 IP 类试
+		"$UPDATER" "geosite:$_spec" >>"$RUN_LOG" 2>&1
+		[ -f "$RULES_DIR/geosite_$_spec.txt" ] ||
+			"$UPDATER" "geoip:$_spec" >>"$RUN_LOG" 2>&1
+		;;
+	esac
+
+	_f="$(resolve_spec "$_spec")"
+	if [ ! -f "$_f" ]; then
+		_msg="分类 $_spec 取不到（检查拼写；上游没有这个分类，或网络不通，详见 /tmp/ssrules.log）"
+	elif persist_rules; then
+		# 新装的分类也要进 flash —— 不落盘的话重启后 ensure_rules 解出来的旧包里
+		# 没有它，引用它的规则会静默退化成只按 IP 匹配
+		_msg="$(spec_summary "$_spec" "$_f")"
+	else
+		_msg="分类 $_spec 已下载（$_f），但持久化失败，重启后会丢"
+	fi
+
+	# 先放锁再报完成：页面一看到 run=0 就让用户能再点，
+	# 若锁还没撤，那一下会被「已在更新中」挡回去
+	rm -rf "$LOCK_DIR"
+	end_run "$_msg"
+}
+
 # extract <geosite:x | geoip:y | x>
 cmd_extract() {
 	ensure_rules
@@ -369,24 +453,38 @@ cmd_extract() {
 		return 0
 	fi
 
-	case "$_spec" in
-	geosite:*) _f="$RULES_DIR/geosite_${_spec#geosite:}.txt" ;;
-	geoip:*)   _f="$RULES_DIR/geoip_${_spec#geoip:}.txt" ;;
-	*)         _f="$RULES_DIR/geosite_${_spec}.txt" ;;
-	esac
-
-	if [ ! -f "$_f" ]; then
-		end_run "分类 $_spec 未安装，请先更新"
+	_f="$(resolve_spec "$_spec")"
+	if [ -f "$_f" ]; then
+		# 已装：同步直接打印，秒回。不占锁，也不动 xray_action_run 的语义
+		end_run "$(spec_summary "$_spec" "$_f")"
 		return 0
 	fi
 
-	_n=$(wc -l <"$_f")
-	_head=$(head -n 20 "$_f" | tr '\n' ' ')
-	if [ "$_n" -gt 20 ]; then
-		end_run "$_spec 共 $_n 条，前 20 条：$_head"
-	else
-		end_run "$_spec 共 $_n 条：$_head"
-	fi
+	# 未装：按需下载。
+	#
+	# 为什么放后台而不是同步：httpd 是单进程 select 循环，SystemCmd 走 doSystem
+	# 是阻塞的 —— 同步下载在网络不通时要走完 15s 连接超时 × 最多 3 个源 × 2 次
+	# 重试，整个 Web UI 会跟着冻住近两分钟。放后台后由页面已有的 waitIdle 轮询
+	# 收尾（runCmd 内部就是「触发 → 轮询 xray_action_run」），结果文本照样从
+	# xray_action_status 读回来，用户仍然只点一次。
+	#
+	# begin_run 必须在前台先调：它是「命令已被受理」的唯一信号。若放进后台子
+	# shell，主命令会先返回，页面的 GET console_response.asp 一回来就可能读到
+	# 旧的 run=0 而立刻收尾，拿到上一次的陈旧状态。
+	acquire_lock
+	case $? in
+	1)
+		end_run "分类正在更新中，请稍后再试"
+		return 0
+		;;
+	2)
+		end_run "无法创建锁目录 $LOCK_DIR"
+		return 0
+		;;
+	esac
+
+	begin_run "分类 $_spec 未安装，正在按需下载…"
+	( do_extract_install "$_spec" ) >/dev/null 2>&1 </dev/null &
 }
 
 # ---------------------------------------------------------------------------
