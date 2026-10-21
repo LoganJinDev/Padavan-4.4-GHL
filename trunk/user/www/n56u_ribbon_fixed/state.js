@@ -413,9 +413,10 @@ if (found_app_smartdns()||found_app_adguardhome()){
 	tabtitle[15] = new Array("", "<#menu5_29#>");
 }
 
-if (found_app_aliddns()||found_app_zerotier()||found_app_ddnsto()||found_app_wireguard()||found_app_frp()){
-	tabtitle[16] = new Array("", "<#menu5_30#>");
-}
+// 穿透服务（aliddns / zerotier / ddnsto / wireguard / frp 五个入口）的 tab 标题不能在这里写死：
+// 原实现给 tabtitle[16] 固定一个标题、tablink[16] 又用 else if 五选一，结果只显示第一个已编译的入口。
+// 现改为在下方 "Level 3 Tab Link" 区与 tablink[16] 成对 push —— 标题与链接必须同长同序，
+// 因为 show_menu 的循环上界取 tabtitle、href 取 tablink，错位会静默点到别的页面。
 if (found_app_aldriver()){
 	tabtitle[17] = new Array("", "<#menu5_36#>");
 }
@@ -462,21 +463,49 @@ if (found_app_smartdns()){
 	adg_array = new Array("","Advanced_adguardhome.asp");
 	tablink[15] = (adg_array);
 }
+// 穿透服务：五个入口全部并列成 tab。
+// 原实现用 else if 让五者互斥、共用 tablink[16] 一个槽位，导致只有第一个命中者可见
+//（ALIDDNS=y 时 aliddns 抢占，ddnsto / zerotier / wireguard / frp 的页面永远没有入口）。
+// ★ tablink[16] 与 tabtitle[16] 必须成对 push 且顺序一致：show_menu 的循环上界取
+//   tabtitle[16].length，而 href 取 tablink[16][i]，一旦错位就会静默点到别的页面。
+aliddns_array = new Array("","Advanced_aliddns.asp");
+zerotier_array = new Array("","Advanced_zerotier.asp");
+ddnsto_array = new Array("","Advanced_ddnsto.asp");
+wireguard_array = new Array("","Advanced_wireguard.asp");
+frp_array = new Array("","Advanced_frp.asp");
+tablink[16] = new Array("");
+tabtitle[16] = new Array("");
 if (found_app_aliddns()){
-	aliddns_array = new Array("","Advanced_aliddns.asp");
-	tablink[16] = (aliddns_array);
-}else if (found_app_zerotier()){
-	zerotier_array = new Array("","Advanced_zerotier.asp");
-	tablink[16] = (zerotier_array);
-}else if (found_app_ddnsto()){
-	ddnsto_array = new Array("","Advanced_ddnsto.asp");
-	tablink[16] = (ddnsto_array);
-}else if (found_app_wireguard()){
-	wireguard_array = new Array("","Advanced_wireguard.asp");
-	tablink[16] = (wireguard_array);
-}else if (found_app_frp()){
-	frp_array = new Array("","Advanced_frp.asp");
-	tablink[16] = (frp_array);
+	tablink[16].push(aliddns_array[1]);
+	tabtitle[16].push("阿里DDNS");
+}
+if (found_app_zerotier()){
+	tablink[16].push(zerotier_array[1]);
+	tabtitle[16].push("ZeroTier");
+}
+if (found_app_ddnsto()){
+	tablink[16].push(ddnsto_array[1]);
+	tabtitle[16].push("DDNSTO");
+}
+if (found_app_wireguard()){
+	tablink[16].push(wireguard_array[1]);
+	tabtitle[16].push("WireGuard");
+}
+if (found_app_frp()){
+	tablink[16].push(frp_array[1]);
+	tabtitle[16].push("FRP");
+}
+
+// 查某页在 tab 组内的下标（1-based），专供 show_menu 的第三个参数 L3。
+// L3 兼作「tab 条是否渲染」的开关与「当前 tab 高亮下标」：L3 为假值时整条 tab 条不渲染，
+// 传错则本人所在 tab 会变成不可点的 active 项（show_menu 把 active 的 href 改成 javascript:void(0)）。
+// tablink[16] 是按编译开关动态拼出来的，所以下标不能写死，必须查。
+function tab_pos(arr, page){
+	for(var i = 1; i < arr.length; i++){
+		if(arr[i] == page)
+			return i;
+	}
+	return 1;
 }
 if (found_app_aldriver()){
 	aldriver_arry = new Array("","Advanced_aliyundrive.asp");
