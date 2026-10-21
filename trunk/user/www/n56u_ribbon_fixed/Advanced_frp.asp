@@ -40,7 +40,9 @@ function initial(){
 	// show_menu(L1, L2, L3)：L2 是左侧子菜单下标，要对着 menuL2_title 数。
 	// frp 已并入「穿透服务」(menu5_30)，与 aliddns/zerotier/ddnsto/wireguard 同组，
 	// 该组对应 menuL2 下标 17（紧随 smartdns/adguardhome 之后）。
-	show_menu(5,17,0);
+	// L3 必须传本页在「穿透服务」tab 组内的下标：L3 为假值时整条 tab 条不渲染，
+	// 传错则本页自己的 tab 会变成不可点的 active 项。下标随编译开关变动，故用 tab_pos() 查。
+	show_menu(5, 17, tab_pos(tablink[16], "Advanced_frp.asp"));
 	showmenu();
 	show_footer();
 
