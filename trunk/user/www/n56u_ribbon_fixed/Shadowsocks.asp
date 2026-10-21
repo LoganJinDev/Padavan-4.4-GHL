@@ -2513,8 +2513,8 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 														<th colspan="2" style="background-color: #E3E3E3;">游戏模式客户端UDP所有端口,TCP跟随主服务器端口模式,强制走绕过大陆模式</th>
 													</tr>
 													<tr>
-														<td colspan="3"><a href="javascript:spoiler_toggle('script8')"><i class="icon-chevron-down"></i> <span>游戏模式LAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
-															<div id="script8" style="display: block">
+														<td colspan="3"><a href="javascript:spoiler_toggle('script8')"><i class="icon-chevron-right"></i> <span>游戏模式LAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
+															<div id="script8" style="display: none">
 																<textarea rows="8" wrap="off" spellcheck="false" maxlength="314571" class="span12" name="scripts.ss_lan_gmip.sh" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.ss_lan_gmip.sh",""); %></textarea>
 															</div>
 														</td>
@@ -2523,43 +2523,43 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 													<th colspan="3" style="background-color: #E3E3E3;">代理规则名单（一行一个 IP / 网段 / 域名）</th>
 												</tr>
 												<tr>
-														<td colspan="3"><a href="javascript:spoiler_toggle('script9')"><i class="icon-chevron-down"></i> <span>不走SS代理的LAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
-															<div id="script9" style="display: block">
+														<td colspan="3"><a href="javascript:spoiler_toggle('script9')"><i class="icon-chevron-right"></i> <span>不走SS代理的LAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
+															<div id="script9" style="display: none">
 																<textarea rows="8" wrap="off" spellcheck="false" maxlength="314571" class="span12" name="scripts.ss_lan_ip.sh" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.ss_lan_ip.sh",""); %></textarea>
 															</div>
 														</td>
 													</tr>
 													<tr>
-														<td colspan="3"><a href="javascript:spoiler_toggle('script10')"><i class="icon-chevron-down"></i> <span>强制走SS代理的LAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
-															<div id="script10" style="display: block">
+														<td colspan="3"><a href="javascript:spoiler_toggle('script10')"><i class="icon-chevron-right"></i> <span>强制走SS代理的LAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
+															<div id="script10" style="display: none">
 																<textarea rows="8" wrap="off" spellcheck="false" maxlength="314571" class="span12" name="scripts.ss_lan_bip.sh" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.ss_lan_bip.sh",""); %></textarea>
 															</div>
 														</td>
 													</tr>
 													<tr>
-														<td colspan="3"><a href="javascript:spoiler_toggle('script11')"><i class="icon-chevron-down"></i> <span>不走SS代理的WAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
-															<div id="script11" style="display: block">
+														<td colspan="3"><a href="javascript:spoiler_toggle('script11')"><i class="icon-chevron-right"></i> <span>不走SS代理的WAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
+															<div id="script11" style="display: none">
 																<textarea rows="8" wrap="off" spellcheck="false" maxlength="314571" class="span12" name="scripts.ss_wan_ip.sh" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.ss_wan_ip.sh",""); %></textarea>
 															</div>
 														</td>
 													</tr>
 													<tr>
-														<td colspan="3"><a href="javascript:spoiler_toggle('script12')"><i class="icon-chevron-down"></i> <span>强制走SS代理的WAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
-															<div id="script12" style="display: block">
+														<td colspan="3"><a href="javascript:spoiler_toggle('script12')"><i class="icon-chevron-right"></i> <span>强制走SS代理的WAN IP:</span> <small style="color:#999;">（点击收起/展开）</small></a>
+															<div id="script12" style="display: none">
 																<textarea rows="8" wrap="off" spellcheck="false" maxlength="314571" class="span12" name="scripts.ss_ip.sh" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.ss_ip.sh",""); %></textarea>
 															</div>
 														</td>
 													</tr>
 													<tr>
-														<td colspan="3"><a href="javascript:spoiler_toggle('script13')"><i class="icon-chevron-down"></i> <span>不走SS代理的域名:</span> <small style="color:#999;">（点击收起/展开）</small></a>
-															<div id="script13" style="display: block">
+														<td colspan="3"><a href="javascript:spoiler_toggle('script13')"><i class="icon-chevron-right"></i> <span>不走SS代理的域名:</span> <small style="color:#999;">（点击收起/展开）</small></a>
+															<div id="script13" style="display: none">
 																<textarea rows="8" wrap="off" spellcheck="false" maxlength="314571" class="span12" name="scripts.uss_dom.sh" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.uss_dom.sh",""); %></textarea>
 															</div>
 														</td>
 													</tr>
 													<tr>
-														<td colspan="3"><a href="javascript:spoiler_toggle('script14')"><i class="icon-chevron-down"></i> <span>强制走SS代理的域名:</span> <small style="color:#999;">（点击收起/展开）</small></a>
-															<div id="script14" style="display: block">
+														<td colspan="3"><a href="javascript:spoiler_toggle('script14')"><i class="icon-chevron-right"></i> <span>强制走SS代理的域名:</span> <small style="color:#999;">（点击收起/展开）</small></a>
+															<div id="script14" style="display: none">
 																<textarea rows="8" wrap="off" spellcheck="false" maxlength="314571" class="span12" name="scripts.ss_dom.sh" style="font-family:'Courier New'; font-size:12px;"><% nvram_dump("scripts.ss_dom.sh",""); %></textarea>
 															</div>
 														</td>
