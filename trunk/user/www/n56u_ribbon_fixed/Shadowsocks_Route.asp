@@ -85,7 +85,7 @@ function save_global(){
 function render_rules(){
 	var html = '';
 	if (ROWS.length === 0) {
-		html = '<tr><td colspan="5" style="text-align:center; color:#888;">'
+		html = '<tr><td colspan="6" style="text-align:center; color:#888;">'
 		     + '还没有规则。点下面的「添加规则」，或点「载入起步模板」。</td></tr>';
 	}
 	for (var i = 0; i < ROWS.length; i++) {
@@ -99,6 +99,7 @@ function render_rules(){
 		     + '<td style="width:150px;">' + XR.esc(r.remarks || '(无备注)') + '</td>'
 		     + '<td>' + XR.esc(XR.summary(r)) + '</td>'
 		     + '<td style="width:210px;">' + XR.esc(XR.nodeLabel(r.outbound)) + '</td>'
+		     + '<td style="width:150px;">' + XR.preproxyCell(r.preproxy) + '</td>'
 		     + '<td style="width:180px; white-space:nowrap;">'
 		     +   '<a class="btn btn-mini" href="Shadowsocks_RuleEdit.asp?id=' + encodeURIComponent(r.id) + '">编辑</a> '
 		     +   '<a class="btn btn-mini" href="javascript:move_rule(' + i + ',-1)">&#8593;</a> '
@@ -479,6 +480,7 @@ function do_custom_update(){
                                                 <th style="width:150px;">备注</th>
                                                 <th>匹配内容</th>
                                                 <th style="width:210px;">出站</th>
+                                                <th style="width:150px;">前置代理</th>
                                                 <th style="width:180px;">操作</th>
                                             </tr>
                                         </thead>
