@@ -40,7 +40,12 @@ GEOIP_BASE="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text"
 
 # 默认域名分类。刻意不含 geolocation-!cn（543KB）与 gfwlist（617KB）——
 # 「其余全走代理」由 routing 的兜底规则承担，装这两份纯属浪费内存。
-DEFAULT_GEOSITE="cn gfw geolocation-cn tld-cn google apple icloud steam private category-ads-all category-games"
+#
+# 后 10 个（tiktok…facebook）只有 MetaCubeX 那个源有，体积都很小（压缩后合计约 5.6KB），
+# 但都是「分流时最常单独指定」的流媒体/社交类 —— 不预装的话用户查 geosite:tiktok
+# 会看到「未安装」，得先自己想办法把它装进来。xrayctl.sh 的 extract 已支持按需装，
+# 这里预装是为了让「更新分类」一次就把常用集合备齐。
+DEFAULT_GEOSITE="cn gfw geolocation-cn tld-cn google apple icloud steam private category-ads-all category-games tiktok netflix youtube telegram twitter disney spotify openai instagram facebook"
 
 # 默认 IP 分类。geoip:ru 有 447KB，不默认装。
 DEFAULT_GEOIP="cn private"

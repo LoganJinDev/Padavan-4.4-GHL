@@ -16,8 +16,17 @@ local name = 'shadowsocksr'
 local uciType = 'servers'
 local subscribe_url = {}
 local i = 1
-local tfilter_words = io.popen("echo -n `nvram get ss_keyword`")
-local filter_words = tfilter_words:read("*all")
+-- 关键词过滤表。
+-- 原写法是 echo -n `nvram get ss_keyword`：反引号（以及 $()）的输出会被 shell
+-- 再做一次【词分割 + 路径展开】—— 关键词里带 * ? [ 时会被展开成一串文件名，
+-- 过滤表整个失真。直接读命令输出，值不经过 shell 解析，也没有多余换行。
+local tfilter_words = io.popen("nvram get ss_keyword")
+local filter_words = ""
+if tfilter_words then
+	filter_words = tfilter_words:read("*all") or ""
+	tfilter_words:close()
+end
+filter_words = filter_words:gsub("%s+$", "")
 
 for line in io.lines("/tmp/dlist.txt") do
 print(line)
@@ -41,9 +50,24 @@ local function base64Decode(text)
 	end
 end
 
+-- shell 单引号转义：把任意值安全地嵌进 '...' 里。
+-- 单引号是 shell 里唯一无法在单引号串内表示的字符，做法是「闭合 → 转义 → 重开」：' -> '\''
+--
+-- ⚠️ 为什么必须有这个函数：本仓库里「把数据拼进 shell 命令串」是【重复出现】的坑
+--    （面板写入路径、ping.sh 的 argv 都踩过同一个）。而订阅内容是完全未受信的远端输入，
+--    任何一处漏转义都是 root 权限的任意命令执行。
+--    凡是把外部值拼进 io.popen / os.execute 的地方，一律过它。
+local function shell_quote(s)
+	return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
 local log = function(...)
-	print(os.date("%Y-%m-%d %H:%M:%S ") .. table.concat({ ... }, " "))
-	os.execute("logger -t 'SS' '" .. table.concat({ ... }, " ") .. "'")
+	local msg = table.concat({ ... }, " ")
+	print(os.date("%Y-%m-%d %H:%M:%S ") .. msg)
+	-- msg 里含远端可控的 alias / url（如 log('成功解析: ' .. result.alias)），
+	-- 原先直接拼进单引号串 ⇒ 别名里一个 ' 就能逃出引号以 root 执行命令。
+	-- 这是与下面 dbus set 并列的第二个注入面，必须一起堵。
+	os.execute("logger -t 'SS' " .. shell_quote(msg))
 end
 -- 分割字符串
 local function split(full, sep)
@@ -90,8 +114,14 @@ local function trim(text)
 end
 -- md5
 local function md5(content)
+	-- urlEncode 把 ' 编成 %27、空格编成 +，拼进单引号是安全的（已核实）；
+	-- 但句柄仍然显式 close —— 每个节点要算两次 md5（hashkey + grouphashkey），
+	-- 几百个节点就是几百个不关的 fd，撞上 ulimit 会让整轮导入中途失败。
 	local stdout = io.popen("echo -n '" .. urlEncode(content) .. "'|md5sum|cut -d ' ' -f1")
-	local stdout2 = stdout:read("*all")
+	local stdout2 = stdout and stdout:read("*all") or ""
+	if stdout then
+		stdout:close()
+	end
 	-- assert(nixio.errno() == 0)
 	return trim(stdout2)
 	--print(stdout)
@@ -388,8 +418,11 @@ local function processData(szType, content)
 		end
 		result.password = password
 	end
+	-- 兜底别名。tostring 包一层是必须的：解析残缺的链接（比如 vless://xxx 没有 @）
+	-- 会让 server / server_port 为 nil，直接拼串抛 "attempt to concatenate a nil value"
+	-- —— 那会中断整轮导入，后面所有订阅 URL 一起作废，症状是「订阅只剩前几个」。
 	if not result.alias then
-		result.alias = result.server .. ':' .. result.server_port
+		result.alias = tostring(result.server or '') .. ':' .. tostring(result.server_port or '')
 	end
 	-- alias 不参与 hashkey 计算
 	local alias = result.alias
@@ -405,9 +438,38 @@ local function processData(szType, content)
 end
 -- wget
 local function wget(url)
-	local stdout = io.popen('curl -s --connect-timeout 15 --retry 5 "' .. url .. '"')
-	local sresult = stdout:read("*all")
-    return trim(sresult)
+	-- url 来自用户填写的订阅地址框，直接拼进双引号串：
+	-- 里面一个 " 就能闭合引号，后面跟 $(...) 或 `...` 即以 root 执行。
+	-- 用 shell_quote 统一处理，同时显式 close 句柄。
+	local stdout = io.popen('curl -s --connect-timeout 15 --retry 5 ' .. shell_quote(url))
+	local sresult = stdout and stdout:read("*all") or ""
+	if stdout then
+		stdout:close()
+	end
+	return trim(sresult)
+end
+
+-- 节点字段统一清洗：剔除 ' 与 \
+--
+-- 为什么这【不是】顺手清理，而是必须：
+--   · ' —— ① 写库走 shell（dbus set 那行），' 会闭合引号；
+--          ② 读库走 httpd/src/web_ex.c 的 db_print，它把值原样嵌进 JS 单引号字符串
+--             （o["ssconf_basic_json_1"]='<值>';），一个 ' 就让整个页面脚本变成
+--             未闭合字符串 —— 表现是「节点管理页面整个白屏/报错」，很难指向订阅内容。
+--   · \ —— 面板侧的 XR.clean() 同样剔除，且 xray 配置生成后会经
+--          shadowsocks.sh 的 sed 's/\\//g' 剥掉所有反斜杠，带 \ 的密码本来就连不上，
+--          留着只会让「面板手工添加」与「订阅导入」两条路径行为不一致。
+-- 换言之：面板本来就维持着「节点值不含 ' 与 \」这个不变量，
+-- 导入订阅不该是绕过它的后门。
+local function sanitize_node(node)
+	local stripped = false
+	for k, v in pairs(node) do
+		if type(v) == "string" and (v:find("'", 1, true) or v:find("\\", 1, true)) then
+			node[k] = v:gsub("['\\]", "")
+			stripped = true
+		end
+	end
+	return stripped
 end
 
 local function check_filer(result)
@@ -415,7 +477,10 @@ local function check_filer(result)
 		local filter_word = split(filter_words, "/")
 		print(cjson.encode(filter_word))
 		for i, v in pairs(filter_word) do
-			if result.alias:find(v) then
+			-- 第四参 true = 纯文本匹配。不加的话 v 被当成 Lua 模式：
+			-- 关键词里的 % . ( ) [ 等会被当元字符（%d 甚至能匹配到任意数字），
+			-- 过滤结果与用户实际输入的关键词对不上。
+			if result.alias:find(v, 1, true) then
 				log('订阅节点关键字过滤:“' .. v ..'” ，该节点被丢弃')
 				return true
 			end
@@ -434,35 +499,59 @@ end
 				cache[groupHash] = {}
 				tinsert(nodeResult, {})
 				local index = #nodeResult
-				-- SSD 似乎是这种格式 ssd:// 开头的
+				-- 订阅内容三种形态，按「先特征、后兜底」判定：
+				--   ① ssd://<base64(JSON)>    机场常用
+				--   ② 明文 JSON（SIP008）     每项自带 server + method
+				--   ③ base64(多行分享链接)    最常见
 				if raw:find('ssd://') then
 					szType = 'ssd'
 					local nEnd = select(2, raw:find('ssd://'))
-					nodes = base64Decode(raw:sub(nEnd + 1, #raw))
-					nodes = jsonParse(nodes)
-					local extra = {
-						airport = nodes.airport,
-						port = nodes.port,
-						encryption = nodes.encryption,
-						password = nodes.password
-					}
-					local servers = {}
-					-- SS里面包着 干脆直接这样
-					for _, server in ipairs(nodes.servers) do
-						tinsert(servers, setmetatable(server, { __index = extra }))
-					end
-					nodes = servers
-					-- SS SIP008 直接使用 Json 格式
-					local info = cjson.decode(raw)
-				elseif info then
-					nodes = info.servers or info
-					if nodes[1].server and nodes[1].method then
-						szType = 'sip008'
+					-- jsonParse 这个函数在整个仓库里【不存在】，原样调用必抛
+					-- "attempt to call a nil value" —— SSD 订阅一条都导不进来。
+					-- 改用 cjson.decode 并用 pcall 兜住：远端内容不可信，
+					-- 解析失败只该丢这一个订阅，不该让整轮导入崩掉。
+					local decoded = base64Decode(raw:sub(nEnd + 1, #raw))
+					local okd, obj = pcall(cjson.decode, decoded)
+					if okd and type(obj) == "table" and type(obj.servers) == "table" then
+						local extra = {
+							airport = obj.airport,
+							port = obj.port,
+							encryption = obj.encryption,
+							password = obj.password
+						}
+						local servers = {}
+						-- SS里面包着 干脆直接这样
+						for _, server in ipairs(obj.servers) do
+							tinsert(servers, setmetatable(server, { __index = extra }))
+						end
+						nodes = servers
+					else
+						nodes = {}
+						log('SSD 订阅内容不是合法 JSON，已跳过: ' .. tostring(url))
 					end
 				else
-					-- ssd 外的格式
-					nodes = split(base64Decode(raw):gsub(" ", "_"), "\n")
+					-- 先试 SIP008：明文 JSON。
+					-- 原来这里写的是 `elseif info then`，而 info 是【各分支内的局部变量】，
+					-- 在这个作用域里根本不存在（读的是全局 nil）—— 条件恒假，
+					-- 于是 SIP008 订阅永远掉进下面的 base64 分支，
+					-- 把一段明文 JSON 当 base64 解，结果全部节点被丢弃。
+					local okj, obj = pcall(cjson.decode, raw)
+					if okj and type(obj) == "table" then
+						local servers = obj.servers or obj
+						if type(servers) == "table" and type(servers[1]) == "table"
+							and servers[1].server and servers[1].method then
+							szType = 'sip008'
+							nodes = servers
+						end
+					end
+					if not nodes then
+						-- ③ base64 多行分享链接。
+						-- gsub(" ", "_") 原样保留：分享链接用 base64 的 URL-safe 变体，
+						-- 而部分机场把 + 换成了空格，换回 _ 后由 base64Decode 再还原成 /
+						nodes = split(base64Decode(raw):gsub(" ", "_"), "\n")
+					end
 				end
+				nodes = nodes or {}
 				for _, v in ipairs(nodes) do
 					if v then
 						local result
@@ -516,40 +605,80 @@ end
 		end
 		local add, del = 0, 0
 		for line in io.lines("/tmp/dlinkold.txt") do
-		newline = line
-		local olddb = io.popen("dbus get ssconf_basic_json_" ..line)
-		local old = olddb:read("*all")
-		--print(#old)
-		if #old > 1 then
-		old = cjson.decode(old)
-				if old.grouphashkey or old.hashkey then -- 没有 hash 的不参与删除
-					if not nodeResult[old.grouphashkey] or not nodeResult[old.grouphashkey][old.hashkey] then
-						io.popen("dbus remove ssconf_basic_json_" ..i)
-						del = del + 1
-					else
-						local dat = nodeResult[old.grouphashkey][old.hashkey]
-						-- 标记一下
-						setmetatable(nodeResult[old.grouphashkey][old.hashkey], { __index =  { _ignore = true } })
+			newline = line
+			-- 旧节点号来自文件，但仍只认纯数字：它要拼进 dbus 变量名，
+			-- 而紧跟着的是一个【删除】操作 —— 拼错就是把别的节点删掉。
+			local oldidx = tostring(line):match("^(%d+)$")
+			if not oldidx then
+				log('忽略非法节点号: ' .. tostring(line))
+			else
+				local olddb = io.popen("dbus get ssconf_basic_json_" .. oldidx)
+				local old = olddb and olddb:read("*all") or ""
+				if olddb then
+					olddb:close()
+				end
+				--print(#old)
+				if #old > 1 then
+					-- pcall 兜住：库里可能有手工写入或旧版本遗留的非 JSON 值，
+					-- 一次 decode 失败不该让整轮 diff 中断（那样新增节点也一起没了）。
+					local okold, oldobj = pcall(cjson.decode, old)
+					old = okold and oldobj or nil
+					if type(old) == "table" then
+						if old.grouphashkey or old.hashkey then -- 没有 hash 的不参与删除
+							if not nodeResult[old.grouphashkey] or not nodeResult[old.grouphashkey][old.hashkey] then
+								-- ★ 这里原本写的是 ..i —— i 是【读订阅列表时】的循环变量，
+								--   跑到 diff 阶段早已停在最后一个订阅 URL 的序号上，
+								--   于是每删一个节点都在删同一个（错误的）变量：
+								--   真正的过期节点一个都没删掉，某个无辜节点却被反复删。
+								--   正确的是本轮迭代的 line（旧节点号）。
+								local fh = io.popen("dbus remove ssconf_basic_json_" .. oldidx)
+								if fh then
+									fh:close()
+								end
+								del = del + 1
+							else
+								-- 标记一下
+								setmetatable(nodeResult[old.grouphashkey][old.hashkey], { __index = { _ignore = true } })
+							end
+						else
+							if not old.coustom then
+								old.alias = tostring(old.server or '') .. ':' .. tostring(old.server_port or '')
+							end
+							log('忽略手动添加的节点: ' .. tostring(old.alias))
+						end
 					end
-				else
-					if not old.coustom then
-						old.alias = old.server .. ':' .. old.server_port
-					end
-					log('忽略手动添加的节点: ' .. old.alias)
 				end
 			end
 		end
 		local ssrindext = io.popen('dbus list ssconf_basic_|grep _json_ | cut -d "=" -f1|cut -d "_" -f4|sort -rn|head -n1')
-		local ssrindex = ssrindext:read("*all")
+		local ssrindex = ssrindext and ssrindext:read("*all") or ""
+		if ssrindext then
+			ssrindext:close()
+		end
 		if #ssrindex == 0 then
 			ssrindex = 1
 		else
-		ssrindex = tonumber(ssrindex) + 1
+			-- tonumber 可能返回 nil（输出异常时），nil + 1 会直接抛错中断整轮入库
+			ssrindex = (tonumber(ssrindex) or 0) + 1
 		end
 		for k, v in ipairs(nodeResult) do
 			for kk, vv in ipairs(v) do
 				if not vv._ignore then				
-					io.popen("dbus set ssconf_basic_json_" .. ssrindex .. "='" .. cjson.encode(vv) .. "'")
+					-- ★★ 这里原先是 "='" .. cjson.encode(vv) .. "'" —— 单引号拼接。
+					--    cjson.encode 只转义双引号，【不转义单引号】，所以订阅里任一字段
+					--    出现一个 ' 就闭合引号、逃出字符串，后面跟什么就以 root 执行什么。
+					--    例如 remarks 写成  a';reboot;#  导入订阅即重启路由器；
+					--    写成  a';<任意命令>;#  就是完整的 root RCE。
+					--    现在两道防线：
+					--      ① sanitize_node() 在入库前剔除 ' 与 \（与面板 XR.clean 一致）；
+					--      ② 这里再用 shell_quote 转义 —— 即便将来有人绕过 ① 也断不了命令。
+					if sanitize_node(vv) then
+						log('节点字段含不支持的字符（单引号/反斜杠），已剔除: ' .. tostring(vv.alias))
+					end
+					local fh = io.popen("dbus set ssconf_basic_json_" .. ssrindex .. "=" .. shell_quote(cjson.encode(vv)))
+					if fh then
+						fh:close()
+					end
 					ssrindex = ssrindex + 1
 					add = add + 1
 

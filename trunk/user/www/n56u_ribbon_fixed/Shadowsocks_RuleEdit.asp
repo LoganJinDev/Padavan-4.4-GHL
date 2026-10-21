@@ -73,6 +73,15 @@ function fill_form(){
 
 	// 出站下拉要等 db_ss 就绪后再填，所以放这里而不是 initial
 	XR.fillSelect($j('#outbound')[0], r.outbound || 'default');
+	// 前置代理必须排在出站【之后】填：它的可选项要排掉基础出站自己（自链）
+	XR.fillPreSelect($j('#preproxy')[0], r.preproxy || '', $j('#outbound').val());
+}
+
+// 出站变化时重填前置代理列表。
+// 不重填的话用户能把「出站 = 节点3、前置代理 = 节点3」这种自链组合选出来，
+// 而它在引擎里会被静默忽略（选了等于没选）
+function syncPre(){
+	XR.fillPreSelect($j('#preproxy')[0], $j('#preproxy').val(), $j('#outbound').val());
 }
 
 function save(){
@@ -86,11 +95,23 @@ function save(){
 		return;
 	}
 
+	var ob = XR.clean($j('#outbound').val());
+	var pp = XR.clean($j('#preproxy').val());
+
+	// 自链兜底：下拉列表已经排掉了基础出站自己，但列表是 JS 填的，值可能来自更早的
+	// 一次填表，所以这里再判一次。引擎（genxrayconfig.lua 的 make_resolver）遇到自链
+	// 会静默回落成不带前置代理 —— 静默忽略对用户是坏体验，宁可在这里说清楚
+	if (pp && ob === 'node_' + pp) {
+		alert('前置代理不能和出站选同一个节点，否则会形成循环，该规则不会生效。');
+		return;
+	}
+
 	var o = {
 		enabled: $j('#enabled')[0].checked ? '1' : '0',
 		remarks: XR.clean($j('#remarks').val()),
 		network: XR.clean($j('#network').val()),
-		outbound: XR.clean($j('#outbound').val()),
+		outbound: ob,
+		preproxy: pp,
 		fakedns: $j('#fakedns')[0].checked ? '1' : '0',
 		domain_list: domain,
 		ip_list: ip
@@ -205,9 +226,25 @@ textarea.mono { font-family: 'Courier New', Courier, mono; font-size: 13px; }
                                         <tr>
                                             <td>出站</td>
                                             <td>
-                                                <select id="outbound" class="input" style="width:340px;"></select>
+                                                <select id="outbound" class="input" style="width:340px;"
+                                                        onchange="syncPre()"></select>
                                                 <span class="help-block" style="margin:2px 0 0 0;">
                                                     命中这条规则的流量走哪个节点。节点列表来自「科学上网」页已保存的节点。
+                                                </span>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td>前置代理</td>
+                                            <td>
+                                                <select id="preproxy" class="input" style="width:340px;"></select>
+                                                <span class="help-block" style="margin:2px 0 0 0;">
+                                                    留空时「出站」直接连它的服务器。<br>
+                                                    选了节点后，本规则会<b>先连到该节点，再由它连「出站」的服务器</b>，
+                                                    即链式代理（xray 的 <code>sockopt.dialerProxy</code>）。<br>
+                                                    适用场景：「出站」的服务器地址被墙或只允许特定地区访问，
+                                                    需要一个中转才能连上。多绕一跳会明显变慢，非必要不要填。<br>
+                                                    <b>直连</b>与<b>拦截</b>是本地出站，没有可挂前置代理的传输层，选了不生效；
+                                                    与「出站」相同的节点也不可选（会形成循环）。
                                                 </span>
                                             </td>
                                         </tr>

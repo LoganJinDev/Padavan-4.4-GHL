@@ -71,6 +71,15 @@ function fill_form(){
 	// 新条目默认「默认节点」而不是「遵循分流」：
 	// 一条什么都不做的条目只会让人困惑，默认值应该是个有实际效果的选择
 	XR.fillSelect($j('#outbound')[0], a.outbound || 'default', [FOLLOW]);
+	// 前置代理必须排在出站【之后】填：它的可选项要排掉基础出站自己（自链）
+	XR.fillPreSelect($j('#preproxy')[0], a.preproxy || '', $j('#outbound').val());
+}
+
+// 出站变化时重填前置代理列表。
+// 不重填的话用户能把「出站 = 节点3、前置代理 = 节点3」这种自链组合选出来，
+// 而它在引擎里会被静默忽略（选了等于没选）
+function syncPre(){
+	XR.fillPreSelect($j('#preproxy')[0], $j('#preproxy').val(), $j('#outbound').val());
 }
 
 // 单个来源是否合法：MAC 或 IP/CIDR
@@ -102,11 +111,23 @@ function save(){
 		}
 	}
 
+	var ob = XR.clean($j('#outbound').val());
+	var pp = XR.clean($j('#preproxy').val());
+
+	// 自链兜底：下拉列表已经排掉了基础出站自己，但列表是 JS 填的，值可能来自更早的
+	// 一次填表，所以这里再判一次。引擎（genxrayconfig.lua 的 make_resolver）遇到自链
+	// 会静默回落成不带前置代理 —— 静默忽略对用户是坏体验，宁可在这里说清楚
+	if (pp && ob === 'node_' + pp) {
+		alert('前置代理不能和出站选同一个节点，否则会形成循环，该条目不会生效。');
+		return;
+	}
+
 	var o = {
 		enabled: $j('#enabled')[0].checked ? '1' : '0',
 		remarks: XR.clean($j('#remarks').val()),
 		sources: src,
-		outbound: XR.clean($j('#outbound').val())
+		outbound: ob,
+		preproxy: pp
 	};
 
 	var pairs = {};
@@ -215,9 +236,24 @@ textarea.mono { font-family: 'Courier New', Courier, mono; font-size: 13px; }
                                         <tr>
                                             <td>出站</td>
                                             <td>
-                                                <select id="outbound" class="input" style="width:340px;"></select>
+                                                <select id="outbound" class="input" style="width:340px;"
+                                                        onchange="syncPre()"></select>
                                                 <span class="help-block" style="margin:2px 0 0 0;">
                                                     命中本条目来源的流量直接走这个出站，<b>不再看上面的分流规则</b>。
+                                                </span>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td>前置代理</td>
+                                            <td>
+                                                <select id="preproxy" class="input" style="width:340px;"></select>
+                                                <span class="help-block" style="margin:2px 0 0 0;">
+                                                    留空时「出站」直接连它的服务器。<br>
+                                                    选了节点后，本条目会<b>先连到该节点，再由它连「出站」的服务器</b>，
+                                                    即链式代理（xray 的 <code>sockopt.dialerProxy</code>）。<br>
+                                                    「出站」选<b>遵循分流</b>时本条目不生成规则，前置代理也就无意义。<br>
+                                                    <b>直连</b>与<b>拦截</b>是本地出站，没有可挂前置代理的传输层，选了不生效；
+                                                    与「出站」相同的节点也不可选（会形成循环）。
                                                 </span>
                                             </td>
                                         </tr>
