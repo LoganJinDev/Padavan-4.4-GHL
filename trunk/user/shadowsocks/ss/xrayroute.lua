@@ -27,7 +27,20 @@ local KNOWN_PREFIX = { domain = 1, full = 1, keyword = 1, regexp = 1 }
 local file_cache = {}
 
 -- 读取一个 dbus 键；取不到或为空返回 nil
+--
+-- 键名会被直接拼进 shell 命令，必须先过白名单。这不是洁癖：id 来自 dbus 里的
+-- xray_route_order / xray_acl_order（逗号分隔的 id 串），而那两个键是面板经
+-- apply.cgi 写进去的，值本身没有任何服务端校验。往 order 里塞一个
+-- "1; touch /tmp/x" 这样的 id，拼出来就是 `dbus get xray_rule_1; touch /tmp/x`，
+-- 以 root 执行 —— 与本目录其它生成器踩的是同一个坑。
+-- 全部 6 个调用点的键名都是 xray_ 加纯字母数字下划线（id 只有 r<N> / a<N>
+-- 两种形态，见 xrayroute.js 的 nextRuleId / nextAclId），所以白名单收紧到
+-- [%w_] 不影响任何正常路径。将来若要引入带 - 或 . 的键名，请连同这里的白名单
+-- 一起改，别绕过去。
 function M.dbus_get(key)
+	if type(key) ~= "string" or not key:match("^[%w_]+$") then
+		return nil
+	end
 	local fp = io.popen("dbus get " .. key .. " 2>/dev/null")
 	if not fp then
 		return nil
@@ -53,8 +66,12 @@ function M.read_lines(path)
 	local lines = {}
 	local fp = io.open(path, "r")
 	if fp then
-		for line in fp:lines() do
-			line = line:gsub("^%s+", ""):gsub("%s+$", "")
+		-- 循环变量改名、修剪结果用局部量承接：Lua 5.4/5.5 起 for 的控制变量是 const，
+		-- 原先那句 `line = line:gsub(...)` 在 5.5 下直接编译不过。设备上是 5.1.5，
+		-- 两种写法语义完全相同 —— 改掉只是让本机的 luac -p 能重新当语法闸门用，
+		-- 顺便去掉一个将来换 Lua 版本就会炸的暗雷
+		for raw in fp:lines() do
+			local line = raw:gsub("^%s+", ""):gsub("%s+$", "")
 			if line ~= "" and line:sub(1, 1) ~= "#" then
 				lines[#lines + 1] = line
 			end
