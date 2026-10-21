@@ -24,6 +24,9 @@ romfs:
 	echo "Make www romfs"
 	rm -Rf $(ROMFS_DIR)/www
 	cp -R $(WEBUI_NAME) $(ROMFS_DIR)/www
+# cp -R 是整目录拷贝，会把工作区里的非源码杂物（源码备份 auto_baks/、临时文件）一并带进镜像。
+# CI 从 git 克隆不受影响（auto_baks 已 gitignore），但本地编译会；这里统一清掉，避免刷进无用文件。
+	rm -rf $(ROMFS_DIR)/www/auto_baks
 	rm -f $(ROMFS_DIR)/www/httpd_check.htm
 	echo "ASUSTeK" > $(ROMFS_DIR)/www/httpd_check.htm
 	cd $(ROMFS_DIR)/www && ln -sf /opt/share/www/custom custom

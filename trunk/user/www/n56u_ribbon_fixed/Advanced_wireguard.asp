@@ -39,9 +39,7 @@ $j(document).ready(function() {
 
 function initial(){
 	show_banner(2);
-	// L3 必须传本页在「穿透服务」tab 组内的下标：L3 为假值时整条 tab 条不渲染，
-	// 传错则本页自己的 tab 会变成不可点的 active 项。下标随编译开关变动，故用 tab_pos() 查。
-	show_menu(5, 17, tab_pos(tablink[16], "Advanced_wireguard.asp"));
+	show_menu(5,17,0);
 	showmenu();
 	show_footer();
 
