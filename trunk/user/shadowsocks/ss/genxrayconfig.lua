@@ -25,6 +25,14 @@ local cjson = require "cjson"
 local xrayroute = require "xrayroute"
 
 local server_section = arg[1]
+
+-- 节点序号会被直接拼进 dbus 变量名（"dbus get ssconf_basic_json_" .. 序号），
+-- 必须是纯数字。调用方传的是 nvram 里的节点序号（global_server /
+-- udp_relay_server / socks5_enable），正常路径一定是数字；未配置节点时是空串，
+-- 这里安静退出，比让下面的 cjson.decode("") 抛错、在日志里留一堆 Lua 报错干净
+if not server_section or not server_section:match("^%d+$") then
+	os.exit(0)
+end
 local proto = arg[2]
 local local_port = arg[3] or "0"
 local socks_port = arg[4] or "0"
@@ -33,7 +41,16 @@ local socks_port = arg[4] or "0"
 local FAKE_IP_POOL = "198.18.0.0/15"
 
 -- 读一个节点，字段取自 dbus 的节点库 ssconf_basic_json_<序号>
+-- idx 会被直接拼进 dbus 变量名，必须是纯数字。
+-- 当前 4 个调用点传进来的都是纯数字（arg[1] 已过上面的 ^%d+$；
+-- tag:match("^node_(%d+)$") 的捕获组天然只出数字；preproxy 分支已过 ^%d+$），
+-- 所以这道守卫不改变任何现有行为。加它是纵深防御：一个把入参拼进 shell 命令的
+-- 通用 helper 不该把校验责任外包给调用方 —— 与 xrayroute.lua 的 M.dbus_get
+-- 对称，避免将来新增调用方时把校验漏掉，复现同一类注入。
 local function load_node(idx)
+	if type(idx) ~= "string" or not idx:match("^%d+$") then
+		return nil
+	end
 	local fp = io.popen("dbus get ssconf_basic_json_" .. idx)
 	local raw = fp and fp:read("*all") or ""
 	if fp then
