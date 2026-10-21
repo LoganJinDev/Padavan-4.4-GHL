@@ -6,6 +6,11 @@
 # 现在：ICMP 通就走 ICMP（自建节点，精度最高、不发多余请求）；
 #       ICMP 不通则回落到 TCP 握手计时（机场节点）。
 #
+# ⚠️ 2026-10-21 修复：TCP 兜底的判据原本用 %{http_code} != 000，
+#    但本机场节点全是 VMess/VLESS + WebSocket，端口上跑的不是 HTTP，
+#    http_code 恒为 000 ⇒ 活着的节点被一律判死。已改用 %{time_connect}
+#    判 TCP 握手是否完成。详见下方第 2) 段的详细注释。
+#
 # 入参 $1 = 节点序号（对应 dbus 变量 ssconf_basic_json_<n>）
 # 出参：调用 ssping.lua，把 ping / lost 写回该节点的 JSON
 
@@ -69,17 +74,22 @@ else
 	# ---- 2) TCP 兜底 ----
 	# %{time_connect} = 三次握手完成耗时（秒），换算成毫秒。
 	#
-	# 健康判据用 %{http_code} 而不是 shell 的 $?：
-	#   · 000 = 一个字节 HTTP 响应都没收到，是明确的「死」哨兵；
-	#   · $? 会被 shell 语义污染 —— 写成 echo "$(curl ...) $?" 时，
-	#     $? 在参数展开阶段就被替换为展开前的状态，不是 curl 的。
-	# 实测：TLS 端口用 http:// 连会回 400（抗封锁伪装站的正常反应），
-	#       死端口回 000。故判据是「非 000 即活」，不是「必须是 200」。
+	# 判据用 %{time_connect}（TCP 三次握手是否完成），不用 %{http_code}：
+	#   · 机场节点普遍是 VMess/VLESS + WebSocket，端口上跑的不是 HTTP，
+	#     裸 HTTP 请求拿不到任何状态码 ⇒ http_code 恒为 000。
+	#     用它当判据会把【活着的节点】一律判死 —— 2026-10-21 实测
+	#     t.cnmjcn.cyou:16632 的 TCP 握手 34ms 就完成了，http_code 却是
+	#     000，于是该机场 8 个可用节点全被误判 failed。
+	#   · time_connect 在握手失败或超时时恒为 6 位小数的 0.000000，
+	#     是可靠的「未连上」哨兵；连上则是实际握手耗时，可直接当延迟。
+	#   · 顺带：这样也不再依赖 shell 的 $? —— 写成 echo "$(curl ...) $?"
+	#     时 $? 在参数展开阶段就被替换为展开前的状态，不是 curl 的。
+	# ⚠️ 不能用 0.0*0 这类通配去匹配 0.000000 —— 它会连 0.010000
+	#    （10ms 的正常连接）一起误杀，必须用字面量精确比较。
 	if [ -n "$h" ] && [ -n "$p" ]; then
-		r=`curl -s -o /dev/null -w '%{http_code} %{time_connect}' --connect-timeout 2 -m 3 "http://$h:$p" 2>/dev/null`
-		code=${r%% *}
-		t=${r##* }
-		if [ -n "$code" ] && [ "$code" != "000" ] && [ -n "$t" ]; then
+		t=`curl -s -o /dev/null -w '%{time_connect}' --connect-timeout 2 -m 3 "http://$h:$p" 2>/dev/null`
+		case "$t" in ''|0.000000) t="" ;; esac
+		if [ -n "$t" ]; then
 			ping_time=`echo "$t" | awk '{printf "%d", $1 * 1000}'`
 			ping_loss="0%"
 		fi

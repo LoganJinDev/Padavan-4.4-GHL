@@ -289,6 +289,23 @@
 		return tag ? tag + '（节点已删除）' : '(未设置)';
 	}
 
+	// 列表页「前置代理」列的单元格 HTML。
+	//
+	// 前置代理存的是【节点序号】（'3'），不是出站那种 tag（'node_3'）——
+	// 这是两套取值：见 fillPreSelect 里 ns[i].tag.substring(5) 是反方向
+	// （tag 剥前缀得序号），这里要补前缀再交给 nodeLabel。
+	//
+	// 空值返回一个灰色短横而不是空串：让「没配前置代理」在视觉上后退，
+	// 用户扫列表时注意力落在真正配了链式代理的那几条上。
+	// 返回的是 HTML（不是纯文本），调用处【不要】再套 XR.esc，否则短横会被转义成 &amp;#
+	function preproxyCell(pp) {
+		pp = (pp === null || pp === undefined) ? '' : String(pp);
+		if (pp === '') {
+			return '<span style="color:#bbb;">—</span>';
+		}
+		return esc(nodeLabel('node_' + pp));
+	}
+
 	// 往 <select> 里填出站选项。extra 是额外选项数组，如 ACL 的「遵循分流」
 	function fillSelect(el, cur, extra) {
 		if (!el) {
@@ -471,6 +488,7 @@
 		summary: summary,
 		nodes: nodes,
 		nodeLabel: nodeLabel,
+		preproxyCell: preproxyCell,
 		fillSelect: fillSelect,
 		fillPreSelect: fillPreSelect,
 		runCmd: runCmd,

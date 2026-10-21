@@ -63,7 +63,7 @@ function save_global(){
 function render_rows(){
 	var html = '';
 	if (ROWS.length === 0) {
-		html = '<tr><td colspan="5" style="text-align:center; color:#888;">'
+		html = '<tr><td colspan="6" style="text-align:center; color:#888;">'
 		     + '还没有访问控制条目。不添加时，所有设备都走上面的分流规则。</td></tr>';
 	}
 	for (var i = 0; i < ROWS.length; i++) {
@@ -77,6 +77,7 @@ function render_rows(){
 		     + '<td style="width:150px;">' + XR.esc(a.remarks || '(无备注)') + '</td>'
 		     + '<td>' + XR.esc(source_summary(a)) + '</td>'
 		     + '<td style="width:210px;">' + XR.esc(outbound_label(a.outbound)) + '</td>'
+		     + '<td style="width:150px;">' + XR.preproxyCell(a.preproxy) + '</td>'
 		     + '<td style="width:130px; white-space:nowrap;">'
 		     +   '<a class="btn btn-mini" href="Shadowsocks_ACL_Edit.asp?id=' + encodeURIComponent(a.id) + '">编辑</a> '
 		     +   '<a class="btn btn-mini btn-danger" href="javascript:del_row(' + i + ')">删除</a>'
@@ -247,6 +248,7 @@ function do_apply(){
                                                 <th style="width:150px;">备注</th>
                                                 <th>来源设备</th>
                                                 <th style="width:210px;">出站</th>
+                                                <th style="width:150px;">前置代理</th>
                                                 <th style="width:130px;">操作</th>
                                             </tr>
                                         </thead>

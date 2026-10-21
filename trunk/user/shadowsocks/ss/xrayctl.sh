@@ -453,6 +453,27 @@ cmd_extract() {
 		return 0
 	fi
 
+	# ⚠️ 2026-10-21 修复：带冒号但不是已知前缀 ⇒ 几乎都是拼写错误
+	#    （实测用户输入 geoside:tiktok，少了一个 o，却看到「未安装」而以为功能坏了）。
+	#
+	#    不在这里拦的话，resolve_spec 的裸名分支会把它当成【分类名】，
+	#    拼出 geosite_geoside:tiktok.txt 这种带冒号的畸形路径，然后走完整的
+	#    按需下载链路 —— 三个源 × 连接超时 × 重试。用户盯着「正在按需下载…」
+	#    等几十秒才等到一句「取不到」，期间完全看不出是自己拼错了
+	#    （实测 extract geosite:zzznotexist 在 6 秒后仍停在「未安装，正在按需下载…」）。
+	#    这里直接秒回，并把正确格式摆出来让用户自己对照。
+	case "$_spec" in
+	*:*)
+		case "$_spec" in
+		geosite:* | geoip:*) ;;
+		*)
+			end_run "未知前缀「${_spec%%:*}」，只支持 geosite: 或 geoip:（检查拼写，如 geosite:tiktok）"
+			return 0
+			;;
+		esac
+		;;
+	esac
+
 	_f="$(resolve_spec "$_spec")"
 	if [ -f "$_f" ]; then
 		# 已装：同步直接打印，秒回。不占锁，也不动 xray_action_run 的语义
