@@ -56,6 +56,33 @@ loger() {
 	logger -st ss-rules[$$] -p$1 $2
 }
 
+# ── 分流依赖运行期自检（大声告警）──────────────────────────────────────
+# 「国内无法访问」的根因是树外内核模块（ipset 的 xt_set.ko + ipset/*.ko）没进固件。
+# 构建期已由 trunk/Makefile 的 romfs 产物校验 + trunk/tools/depmod.sh 的 set -e
+# 双重拦截；这里再兜运行期一层，防止别的原因（手工替换过模块、romfs 被裁剪等）
+# 让同一个症状再次静默出现。
+#
+# 内核侧 ipset 子系统或 xt_set 匹配缺失时，下面所有 `-m set --match-set` 规则都会
+# 失败，SS_SPEC_WAN_AC 链里只剩最后那条无条件兜底规则 —— 结果【所有流量（含国内）
+# 一起走代理】，表现就是「国内无法访问」。
+#
+# 注意：用户态 /sbin/ipset 仍会在（由 user/ipset 自己的 romfs 规则安装），所以
+# 「ipset 命令存在」不能当判据，必须实探内核侧能力。只告警不中断，避免把
+# ipset_r 的失败传染给调用链（见文件末尾的 && 串联）。
+ss_ipset_health_check() {
+	ss_probe_missing=""
+	# ① 内核 ipset 子系统：ipset list 能跑通才算子系统已注册
+	ipset list china >/dev/null 2>&1 || ss_probe_missing="${ss_probe_missing} ip_set"
+	# ② xt_set 匹配：iptables 会拿内核版本号校验扩展可用性，内核没有 xt_set.ko 时
+	#    报 "Couldn't find match 'set'"（退出码 2）
+	$ipt_n -m set --help >/dev/null 2>&1 || ss_probe_missing="${ss_probe_missing} xt_set"
+	[ -z "$ss_probe_missing" ] && return 0
+	loger 3 "分流不可用：内核缺少${ss_probe_missing}，树外模块未进入固件"
+	loger 3 "后果：所有流量含国内都会走代理，表现为国内无法访问"
+	loger 3 "修复：重新编译固件，确认 trunk/tools/depmod.sh 已执行且镜像内含 xt_set.ko"
+	return 1
+}
+
 flush_r() {
 	flush_iptables() {
 		ipt="iptables -t $1"
@@ -89,6 +116,9 @@ ipset_r() {
 	ipset -N china hash:net 2>/dev/null
 	ipset -N gmlan hash:net 2>/dev/null
 	ipset -N gfwlist hash:net 2>/dev/null
+	# 建集之后、写 -m set 规则之前自检：此刻 china 集刚建好，探测最有意义。
+	# 故意丢弃返回值（不写 || return），避免 ipset_r 非零传染给调用链。
+	ss_ipset_health_check
 	for ip in $LAN_GM_IP; do ipset -! add gmlan $ip; done
 	$ipt_n -N SS_SPEC_WAN_AC
 	$ipt_n -I SS_SPEC_WAN_AC -p tcp ! --dport 53 -d $server -j RETURN
