@@ -193,14 +193,35 @@ modules:
 	fi
 	@echo "\033[1;32m===> ✅ Kernel modules build completed\033[0m"
 
+# ⚠️ DEPMOD 必须以「变量赋值」形式传入（DEPMOD=$(DEPMOD)），绝不能写成裸词。
+#
+# 裸词会被 make 当成【目标名】而不是变量赋值：make 见该文件已存在且无规则，
+# 只打印一句 "Nothing to be done for '.../tools/depmod.sh'." 就跳过，
+# 内核随即退回自带的默认 depmod（linux-4.4.x/Makefile:363 的 /sbin/depmod）。
+# 后果是 trunk/tools/depmod.sh 整个脚本一次都不执行 —— 而它是 out-of-tree
+# 内核模块（ipset 的 xt_set.ko + ipset/*.ko、antfs）进入 romfs 的唯一安装路径。
+# 症状：这些模块静默缺失 → ss-rules 的 `-m set` 匹配全部失败 → SS_SPEC_WAN_AC
+# 链里只剩最后那条无条件兜底规则 → 国内流量被一并送进代理（「国内无法访问」）。
+# 内核侧的调用形态见 linux-4.4.x/Makefile:1675：
+#   cmd_depmod = $(CONFIG_SHELL) $(srctree)/scripts/depmod.sh $(DEPMOD) ...
+# 即 $(DEPMOD) 是被当作「depmod 可执行文件路径」传给它自己的 wrapper 的。
 modules_install:
 	@echo "\033[1;34m===> 📦 Installing kernel modules to $(ROMFSDIR)/lib/modules...\033[0m"
 	@mkdir -p $(ROMFSDIR)/lib/modules
 	@if grep -q 'CONFIG_MODULES=y' $(LINUX_CONFIG); then \
-		$(MAKEARCH_KERNEL) -C $(LINUXDIR) INSTALL_MOD_PATH=$(ROMFSDIR) $(DEPMOD) modules_install || \
+		$(MAKEARCH_KERNEL) -C $(LINUXDIR) INSTALL_MOD_PATH=$(ROMFSDIR) DEPMOD=$(DEPMOD) modules_install || \
 		{ echo "\033[1;31m===> ❌ Module installation failed (error code: $$?)\033[0m"; exit 1; }; \
 	else \
 		echo "\033[1;33m===> ℹ️ Kernel module support disabled in $(LINUX_CONFIG)\033[0m"; \
+	fi
+	@if [ "$(CONFIG_FIRMWARE_INCLUDE_IPSET)" = "y" ]; then \
+		if ! ls $(ROMFSDIR)/lib/modules/*/kernel/net/netfilter/xt_set.ko >/dev/null 2>&1; then \
+			echo "\033[1;31m===> ❌ 树外内核模块未进入 romfs —— tools/depmod.sh 没有执行！\033[0m"; \
+			echo "\033[1;33m===> ℹ️ 自检：modules_install 里的 DEPMOD 必须是变量赋值 DEPMOD=\$$(DEPMOD)，写成裸词会被 make 当目标名静默跳过\033[0m"; \
+			echo "\033[1;33m===> ℹ️ 后果：ipset/antfs 模块缺失 → ss-rules 的 -m set 规则全部失效 → 国内流量被一起送进代理\033[0m"; \
+			exit 1; \
+		fi; \
+		echo "\033[1;32m===> ✅ 树外内核模块校验通过（xt_set.ko 已在 romfs 中）\033[0m"; \
 	fi
 	@echo "\033[1;32m===> ✅ Kernel modules installation completed\033[0m"
 

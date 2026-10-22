@@ -57,6 +57,19 @@ function M.dbus_get(key)
 	return val
 end
 
+-- shell 单引号转义：把任意值安全地嵌进 '...' 里。
+-- 单引号是 shell 里唯一无法在单引号串内表示的字符，做法是「闭合 → 转义 → 重开」：' -> '\''
+local function shell_quote(s)
+	return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+-- 运行期大声告警：同时写 stderr（当次生成可见）与 syslog（持久、事后可查）。
+-- 与 dlink.lua 的 log 同形；消息要拼进 `logger -t 'SS' ...`，所以一律过 shell_quote。
+local function warn(msg)
+	io.stderr:write("xrayroute: " .. msg .. "\n")
+	os.execute("logger -t 'SS' " .. shell_quote("xrayroute: " .. msg))
+end
+
 -- 读取分类文本，返回去掉空行与 # 注释后的行数组；文件不存在返回空数组
 function M.read_lines(path)
 	local cached = file_cache[path]
@@ -454,6 +467,20 @@ function M.build_routing(resolve)
 	end
 
 	if #rules == 0 then
+		-- 分流总开关开着、却一条规则都没生成 ⇒ 静默降级：面板上开关是亮的，
+		-- 实际行为和不分流完全一样（全部流量走默认节点）。用户只会看到
+		-- 「分流没生效」，看不出为什么，所以这里必须大声告警。
+		-- 开关没开时 #rules == 0 是【预期】的，不能报。
+		--
+		-- 故意不把 xray_route_order 的值打进消息：只区分「空 / 非空」就足以定位
+		-- 两种成因，同时又不用把未受信的 dbus 值带进 shell 命令串。
+		if M.dbus_get("xray_route_enable") == "1" then
+			if (M.dbus_get("xray_route_order") or "") == "" then
+				warn("分流总开关已开，但规则顺序为空 —— 没有配置任何分流规则，全部流量将走默认节点")
+			else
+				warn("分流总开关已开，规则顺序非空，但没有任何一条规则生成成功 —— 引用的规则可能已被删除，全部流量将走默认节点")
+			end
+		end
 		return nil, {}
 	end
 	-- 兜底：不匹配任何规则的流量走默认节点。xray 按顺序匹配，这条必须最后
