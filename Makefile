@@ -13,7 +13,16 @@ CONFIG_FILE     := $(SOURCE_DIR)/.config
 TOOLCHAIN       ?= $(or $(shell echo $$TOOLCHAIN), mipsel-linux-musl)
 TOOLCHAIN_ROOT  := $(TOPDIR)/toolchain
 TOOLCHAIN_PATH  := $(TOOLCHAIN_ROOT)/$(TOOLCHAIN)
-TOOLCHAIN_URL   ?= $(or $(shell echo $$TOOLCHAIN_URL), https://github.com/TurBoTse/padavan/releases/download/toolchain/$(TOOLCHAIN).tar.xz)
+# 预编译交叉工具链已自托管在本仓库 tag `toolchain` 的 Release 里。
+# 原先这里的兜底指向上游 TurBoTse/padavan —— 那是一个静默单点：上游删 Release、
+# 改 tag 或仓库消失，本地裸跑 `make <板型>` 就在第 1 步 404，而 CI 完全无感
+# （CI 自己传 TOOLCHAIN_URL 环境变量，见 .github/workflows/custom.yml）。
+# 现在兜底也指向本仓库，对上游零依赖。
+#   资产要求：文件名必须精确等于 <toolchain>.tar.xz（不带版本后缀），
+#   且两个都传 —— mipsel-linux-musl.tar.xz / mipsel-linux-uclibc.tar.xz，
+#   因为两条 workflow 的 toolchain 下拉都给了这两个选项，只传一个选到另一个就 404。
+#   换地址：设环境变量 TOOLCHAIN_URL 覆盖（优先级高于这里的兜底）。
+TOOLCHAIN_URL   ?= $(or $(shell echo $$TOOLCHAIN_URL), https://github.com/LoganJinDev/Padavan-4.4-GHL/releases/download/toolchain/$(TOOLCHAIN).tar.xz)
 QUEUE_H         := $(TOOLCHAIN_PATH)/$(TOOLCHAIN)/sysroot/usr/include/sys/queue.h
 QUEUE_H_URL     := https://raw.githubusercontent.com/bminor/glibc/master/misc/sys/queue.h
 
