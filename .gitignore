@@ -8,3 +8,5 @@ toolchain/mipsel-linux-*/
 
 # 改文件前的自动备份目录（任意层级），不入库
 auto_baks/
+# 项目本地笔记（AGENTS.md 里的 .mynotes/，不入库）
+.mynotes/
