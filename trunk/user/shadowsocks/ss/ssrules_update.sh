@@ -33,10 +33,15 @@ UA="Mozilla/5.0 (Linux; Padavan)"
 CONNECT_TIMEOUT=15
 RETRY=2
 
-DL_BASE="https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release"
-V2R_BASE="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release"
-META_BASE="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite"
-GEOIP_BASE="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text"
+# ---- 下载源的内置默认值 ----------------------------------------------------
+# ★ 这四个值【必须】留在脚本里，不能只靠界面上的 dbus 键：开机流程
+#   （shadowsocks.sh 的 `xrayctl.sh rules restore`）与 xrayctl.sh 的 extract
+#   都会跑本脚本，此时 dbus 键可能还不存在（新刷机 / storage 被清空）。
+#   下面 resolve_sources() 里「dbus 键优先、读不到就用这里」就是靠这四个兜底。
+DL_BASE_DEF="https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release"
+V2R_BASE_DEF="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release"
+META_BASE_DEF="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite"
+GEOIP_BASE_DEF="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text"
 
 # 默认域名分类。刻意不含 geolocation-!cn（543KB）与 gfwlist（617KB）——
 # 「其余全走代理」由 routing 的兜底规则承担，装这两份纯属浪费内存。
@@ -54,6 +59,68 @@ log() {
 	logger -t ssrules "$@"
 	echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >>"$LOG_FILE"
 }
+
+# ---- 下载源解析（可在「分流规则」页面自定义）-------------------------------
+# 最终 URL = "${xray_dl_prefix}${原始 BASE URL}"
+#   前缀为空 ⇒ 直接用原始 BASE（改动前的行为，零回归）
+#   前缀非空 ⇒ 例：前缀 https://ghproxy.net/ + 原始 https://raw.githubusercontent.com/...
+#              ⇒ https://ghproxy.net/https://raw.githubusercontent.com/...（ghproxy 约定）
+# 前缀存在的意义是应对 raw.githubusercontent.com 被墙，四个源统一过它。
+
+# 形态守卫。这个值来自网页输入框，最终会进 curl 的参数列表。
+# ★ 只挡「会让 curl 参数错位」的形态，不做白名单字符集 ——
+#   xrayctl.sh 的 valid_target() 是 ^[A-Za-z0-9._:@!/-]+$，它【不允许 % & ? =】，
+#   照抄会把带 query 的镜像源全部挡掉。
+# ★ 必须挡「以 - 开头」：`fetch "$URL" "$tmp"` 里 $URL 虽然加了引号、不会发生词分割，
+#   但 curl 收到单个 argv "-o/etc/storage/x" 时会把它当成写文件选项 —— 引号挡不住，
+#   因为它本来就是一个合法 argv。同「订阅内容 = 未受信输入」的既有教训。
+url_ok() {
+	case "$1" in
+	-*) return 1 ;;
+	*[![:print:]]*) return 1 ;;
+	*[[:space:]]*) return 1 ;;
+	esac
+	return 0
+}
+
+# 取一个下载源：dbus 键优先；键不存在 / 值为空 / 形态非法 ⇒ 回落到内置默认值。
+# ★ 非法值必须【回落】而不是照用：否则用户填错一个字符，四个源会一起静默失效，
+#   而表现只是「更新分类」全部报取不到，很难指回这个输入框。
+source_or() {
+	_key="$1"
+	_def="$2"
+	_val="$(dbus get "$_key" 2>/dev/null)"
+	if [ -z "$_val" ]; then
+		printf '%s' "$_def"
+		return 0
+	fi
+	if url_ok "$_val"; then
+		printf '%s' "$_val"
+	else
+		log "警告：$_key 的值形态非法（含空白/控制字符或以 - 开头），已回落到内置默认值"
+		printf '%s' "$_def"
+	fi
+}
+
+# 前缀 + 原始 URL。单独抽出来是为了让「拼接顺序」只有一个写点 ——
+# 顺序写反是静默失效：拼出来的串在语法上仍然"像"一个 URL，只是永远取不到。
+join_url() {
+	printf '%s%s' "$DL_PREFIX" "$1"
+}
+
+resolve_sources() {
+	DL_PREFIX="$(dbus get xray_dl_prefix 2>/dev/null)"
+	if [ -n "$DL_PREFIX" ] && ! url_ok "$DL_PREFIX"; then
+		log "警告：xray_dl_prefix 的值形态非法（含空白/控制字符或以 - 开头），已忽略该前缀"
+		DL_PREFIX=""
+	fi
+	DL_BASE="$(join_url "$(source_or xray_dl_base "$DL_BASE_DEF")")"
+	V2R_BASE="$(join_url "$(source_or xray_dl_v2r "$V2R_BASE_DEF")")"
+	META_BASE="$(join_url "$(source_or xray_dl_meta "$META_BASE_DEF")")"
+	GEOIP_BASE="$(join_url "$(source_or xray_dl_geoip "$GEOIP_BASE_DEF")")"
+}
+
+resolve_sources
 
 # 下载到指定文件。用 -f：HTTP 404 直接返回非零，避免把「404: Not Found」正文当内容存下来
 fetch() {

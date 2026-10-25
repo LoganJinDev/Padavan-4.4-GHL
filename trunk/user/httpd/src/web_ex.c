@@ -2021,6 +2021,17 @@ static int shadowsocks_action_hook(int eid, webs_t wp, int argc, char **argv)
 		notify_rc(RCN_RESTART_SS_TUNNEL);
 	} else if (!strcmp(ss_action, "Update_gfwlist")) {
 		notify_rc(RCN_RESTART_GFWLIST_UPD);
+	} else if (!strcmp(ss_action, "Update_adblock")) {
+		/* 广告过滤没有独立的更新脚本：chnroute / gfwlist 各有 update_*.sh
+		 * （services.c:323-329），而广告过滤的下载逻辑就长在 shadowsocks.sh 的
+		 * start_AD() 里，只能靠重跑整条 start 链来刷新 —— 这一步同时也是必需的，
+		 * 因为让新规则生效的 dnsmasq 重启就在这条链里面。
+		 * ★ 副作用：代理隧道会短暂中断，与上面 "Reconnect" 同款。
+		 * ★ 前提 ss_enable=1：start_ss()（services.c:297-301）在主开关为 0 时直接
+		 *   短路，此时点这个按钮不会有任何动作。 */
+		notify_rc(RCN_RESTART_SHADOWSOCKS);
+		/* 要下 3MB 规则再重启 dnsmasq，比普通重连慢，倒计时给足 */
+		needed_seconds = 8;
 	} else if (!strcmp(ss_action, "Update_dlink")) {
 		notify_rc(RCN_RESTART_DLINK);
 	} else if (!strcmp(ss_action, "Reset_dlink")) {
@@ -2051,6 +2062,7 @@ applydb_store(dbclient *client, const char *name, char *body)
 	char useaping[] = "allping";
 	char usedlink[] = "dlink";
 	char useddlink[] = "ddlink";
+	char useurltest[] = "urltest";
 	size_t nlen = strlen(name);
 	int i, j;
 
@@ -2097,6 +2109,17 @@ applydb_store(dbclient *client, const char *name, char *body)
 			doSystem("/usr/bin/update_dlink.sh %s", "start");
 		} else if (strcmp(dbval, useddlink) == 0) {
 			doSystem("/usr/bin/update_dlink.sh %s", "reset");
+		} else if (strcmp(dbval, useurltest) == 0) {
+			/* URL 测延迟。
+			 * ★ 脚本必须自己后台脱离，这是硬要求不是优化：URL 测试要经代理跑完整
+			 *   DNS+TCP+TLS+HTTP，单节点约 10 秒，40 个节点就是 7 分钟。而 httpd 是
+			 *   单进程 select 循环、doSystem 又是同步阻塞的 ⇒ 不脱离的话这几分钟里
+			 *   一个 HTTP 请求都进不来，连前端要发的 /dbconf?p=urltest 轮询都被堵住，
+			 *   用户看到的就是界面卡死。详见 urltest.sh 顶部。
+			 * ★ dbvar 是 POST 的键 = 裸数字节点号（与 ping 同构）。探测 URL 绝不能
+			 *   走 argv：SystemCmd 只有 128 字节，一条 URL 就吃掉大半，会被静默截断。
+			 *   所以 URL 由脚本自己 dbus get。 */
+			doSystem("/etc_ro/ss/urltest.sh %s", dbvar);
 		} else
 			/* 走 dbus 的 socket 协议直写，绕开 shell。
 			 *

@@ -53,6 +53,12 @@ function render_global(){
 	$j('#route_enable')[0].checked = (X.xray_route_enable === '1');
 	$j('#fakedns')[0].checked = (X.xray_fakedns === '1');
 	$j('#remote_dns').val(X.xray_remote_dns || '');
+	// 下载源：空值就显示为空，输入框的 placeholder 里写的是「留空时脚本用的内置默认地址」
+	$j('#dl_prefix').val(X.xray_dl_prefix || '');
+	$j('#dl_base').val(X.xray_dl_base || '');
+	$j('#dl_v2r').val(X.xray_dl_v2r || '');
+	$j('#dl_meta').val(X.xray_dl_meta || '');
+	$j('#dl_geoip').val(X.xray_dl_geoip || '');
 	$j('#route_enable_state')[0].innerHTML = (X.xray_route_enable === '1')
 		? '<span class="label label-success">已启用</span>'
 		: '<span class="label">已停用</span>';
@@ -76,6 +82,46 @@ function save_global(){
 			return;
 		}
 		XR.status($j('#status_line')[0], '已保存。点「应用」后生效。', false);
+		load_all();
+	});
+}
+
+// ------------------------------------------------------------ 下载源
+
+// 下载源地址的形态校验。
+// ★ 不能照抄后端 valid_target() 的字符集 ^[A-Za-z0-9._:@!/-]+$ —— 它不允许 % & ? =，
+//   会把带 query 的镜像源（例：https://ghproxy.net/…?token=x）全部挡掉。
+// ★ 要求带 http(s):// —— 少写 scheme 是最常见的手误，curl 收到会直接失败，
+//   而失败在界面上只表现为「更新分类」全部报取不到，很难指向这五个输入框。
+// ★ 必须挡单引号与反斜杠：XR.clean() 会静默把它们吃掉，
+//   于是用户粘的地址会被悄悄改掉一个字符却仍显示「已保存」。这里先按原始值判，报错而不是静默改。
+function url_shape_ok(s){
+	return /^https?:\/\/[^\s'\\]+$/i.test(s);
+}
+
+// 保存 5 个下载源。空值 = 用脚本里的内置默认值（键为空时 shell 自己回落），
+// 所以空串是合法输入，不报错也不写占位内容。
+function save_sources(){
+	var fields = ['xray_dl_prefix', 'xray_dl_base', 'xray_dl_v2r', 'xray_dl_meta', 'xray_dl_geoip'];
+	var boxes  = ['dl_prefix', 'dl_base', 'dl_v2r', 'dl_meta', 'dl_geoip'];
+	var pairs  = {};
+	for (var i = 0; i < fields.length; i++) {
+		var raw = $j('#' + boxes[i]).val();
+		// ★ 先按【原始值】校验，再 clean —— 顺序反了会漏掉被 clean 吃掉字符的那些输入
+		if (raw !== '' && !url_shape_ok(raw)) {
+			XR.status($j('#status_line')[0],
+				'下载源「' + boxes[i] + '」格式不对：要写成 http:// 或 https:// 开头的完整地址，' +
+				'且不能含空格、单引号、反斜杠；留空表示用内置默认地址。', false);
+			return;
+		}
+		pairs[fields[i]] = XR.clean(raw);
+	}
+	XR.postPairs(pairs, function(err){
+		if (err) {
+			XR.status($j('#status_line')[0], err, false);
+			return;
+		}
+		XR.status($j('#status_line')[0], '下载源已保存，下次「更新分类」即用新地址。', false);
 		load_all();
 	});
 }
@@ -526,6 +572,47 @@ function do_custom_update(){
                                                     <input type="button" class="btn" value="更新" onclick="do_custom_update()">
                                                     <span class="help-block" style="margin:2px 0 0 0;">
                                                         空格分隔多个，写法是 geosite:名字 或 geoip:名字。
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>下载源（可自定义）</td>
+                                                <td>
+                                                    <div style="margin-bottom:3px;">
+                                                        <span style="display:inline-block; width:80px; color:#666;">加速前缀</span>
+                                                        <input type="text" id="dl_prefix" class="input" style="width:400px;"
+                                                               title="留空则直连。非空时四个源统一拼成「前缀 + 地址」，例：https://ghproxy.net/"
+                                                               placeholder="留空则直连（例：https://ghproxy.net/）" onchange="save_sources()">
+                                                    </div>
+                                                    <div style="margin-bottom:3px;">
+                                                        <span style="display:inline-block; width:80px; color:#666;">域名源①</span>
+                                                        <input type="text" id="dl_base" class="input" style="width:400px;"
+                                                               title="https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release"
+                                                               placeholder="https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release" onchange="save_sources()">
+                                                    </div>
+                                                    <div style="margin-bottom:3px;">
+                                                        <span style="display:inline-block; width:80px; color:#666;">域名源②</span>
+                                                        <input type="text" id="dl_v2r" class="input" style="width:400px;"
+                                                               title="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release"
+                                                               placeholder="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release" onchange="save_sources()">
+                                                    </div>
+                                                    <div style="margin-bottom:3px;">
+                                                        <span style="display:inline-block; width:80px; color:#666;">域名源③</span>
+                                                        <input type="text" id="dl_meta" class="input" style="width:400px;"
+                                                               title="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite"
+                                                               placeholder="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite" onchange="save_sources()">
+                                                    </div>
+                                                    <div style="margin-bottom:3px;">
+                                                        <span style="display:inline-block; width:80px; color:#666;">IP 源</span>
+                                                        <input type="text" id="dl_geoip" class="input" style="width:400px;"
+                                                               title="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text"
+                                                               placeholder="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text" onchange="save_sources()">
+                                                    </div>
+                                                    <span class="help-block" style="margin:2px 0 0 0;">
+                                                        <b>留空 = 用内置默认地址</b>（鼠标停在输入框上可看到完整默认值）。
+                                                        域名分类按 ①②③ 顺序回退，先取到用哪个。<br>
+                                                        raw.githubusercontent.com 被墙时，把「加速前缀」填成镜像地址（例 https://ghproxy.net/ ），
+                                                        四个源会统一走它。改完自动保存，下次「更新分类」即用新地址。
                                                     </span>
                                                 </td>
                                             </tr>

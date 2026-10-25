@@ -203,7 +203,14 @@ Get_sdns_conf () {
         echo "serve-expired no" >> "$smartdns_tmp_Conf"
     fi
     if [ "$sdns_adblock" -eq 1 ] && [ "$sdns_cache" -gt 0 ] ;then
-        echo "conf-file /tmp/anti-ad-for-smartdns.conf" >> "$smartdns_tmp_Conf"
+        # ★ 必须同时判文件非空：开关开着但本次下载失败时，Start_AD 会保留【上一次】
+        #   的旧文件（或不留文件）。不加这个判据的话，配置行照写 ⇒ SmartDNS 加载
+        #   陈旧规则，或指向一个不存在的文件（smartdns 对缺失的 conf-file 会报错）。
+        if [ -s /tmp/anti-ad-for-smartdns.conf ] ;then
+            echo "conf-file /tmp/anti-ad-for-smartdns.conf" >> "$smartdns_tmp_Conf"
+        else
+            logger -t "SmartDNS" "广告过滤开关已开，但规则文件不存在或为空，本次不加载广告过滤规则"
+        fi
     fi
     echo "log-level error" >> "$smartdns_tmp_Conf"
     listnum=$(nvram get sdns_staticnum_x)
@@ -346,23 +353,65 @@ Check_ip_addr () {
     return 0
 }
 
+# 广告过滤：下载规则文件并落盘到 /tmp/anti-ad-for-smartdns.conf
+# ★ 调用点在 Start_smartdns 之前（见 Main），而 conf-file 那一行由 Start_smartdns
+#   内部的 Get_sdns_conf 生成 ⇒ 文件先落地、配置后生成。
+# ★ 本函数是 shadowsocks.sh 的 start_AD() 的孪生副本（连 `check = ` 空格 bug 和死 sed
+#   分支都一模一样），但【不能照抄修法】—— 两个规则文件的格式不同，见下方格式判据。
 Start_AD () {
 # 【下载广告过滤文件】
-    curl -s -o /tmp/sdnsadnew.conf --connect-timeout 10 --retry 3 $(nvram get sdns_adblock_url)
-    if [ ! -f "/tmp/sdnsadnew.conf" ]; then
-        logger -t "SmartDNS" "广告过滤功能未开启或者过滤地址失效，网络异常等 ！！！"
-    else
-        logger -t "SmartDNS" "去广告文件下载成功广告过滤功能已启用..."
-        if [ -f "/tmp/sdnsadnew.conf" ]; then
-            check = `grep -wq "address=" /tmp/sdnsadnew.conf`
-            if [ ! -n "$check" ] ; then
-                cp /tmp/sdnsadnew.conf /tmp/anti-ad-for-smartdns.conf
-            else
-                cat /tmp/sdnsadnew.conf | grep ^\|\|[^\*]*\^$ | sed -e 's:||:address\=\/:' -e 's:\^:/0\.0\.0\.0:' > /tmp/anti-ad-for-smartdns.conf
-            fi
-        fi
+    ad_url="$(nvram get sdns_adblock_url)"
+
+    # 形态守卫。这个值来自网页输入框，最终会进 curl 的参数列表。
+    # ★ 必须挡「以 - 开头」：`curl ... "$URL"` 里 $URL 虽然加了引号、不会发生词分割，
+    #   但 curl 收到单个 argv "-o/etc/storage/x" 时会把它当成写文件选项 ——
+    #   引号挡不住，因为它本来就是一个合法 argv。（同 ssrcrules_update.sh 的 url_ok()）
+    case "$ad_url" in
+    ''|*[![:print:]]*|*[[:space:]]*|-*)
+        logger -t "SmartDNS" "广告过滤：下载地址为空或含空白/控制字符，已跳过本次下载"
+        return 1
+        ;;
+    esac
+
+    rm -f /tmp/sdnsadnew.conf /tmp/sdnsadnew.conf.conv
+    # --fail：HTTP 4xx/5xx 直接算失败。否则 404 的错误页 / 门户认证页会被当规则存下来。
+    # --max-time：原代码只有 --connect-timeout，挡不住「连上了但一直不发数据」。
+    if ! curl -s -f -o /tmp/sdnsadnew.conf --connect-timeout 10 --max-time 60 --retry 2 "$ad_url"; then
+        logger -t "SmartDNS" "广告过滤：规则下载失败（网络异常或地址失效），保留原有规则不覆盖"
+        rm -f /tmp/sdnsadnew.conf
+        return 1
     fi
-    rm -f /tmp/sdnsadnew.conf
+
+    # 内容合法性：curl 的 -o 在传输【之前】就建文件 ⇒ 单看「文件存在」恒为真
+    # （原代码的 [ ! -f ] 分支因此永远不可达，连接失败也照样打「下载成功」）。
+    #
+    # ★ 格式判据必须是 SmartDNS 形态 '^address /'，【不能】照抄 shadowsocks.sh 的
+    #   '^address=/'（实测两个官方规则文件的头部）：
+    #     SmartDNS 版 anti-ad-for-smartdns.conf → `address /000491b06a.com/#`
+    #     dnsmasq 版 anti-ad-for-dnsmasq.conf   → `address=/000491b06a.com/`
+    #   原代码 :357 的 `grep -wq "address="` 与 :361 的 sed 都是按【dnsmasq】形态写的
+    #   ⇒ 是另一处孪生 bug。照抄 dnsmasq 判据会把合法文件数成 0 条、静默废掉本功能。
+    ad_cnt=$(grep -c '^address /' /tmp/sdnsadnew.conf 2>/dev/null)
+    if [ "${ad_cnt:-0}" -ge 100 ]; then
+        cp /tmp/sdnsadnew.conf /tmp/anti-ad-for-smartdns.conf
+    else
+        # 不是 SmartDNS 原生格式 ⇒ 可能是 ABP 格式（||domain^），转换后再判一次。
+        # ★ 原代码这一段是死代码：`check = \`grep -wq ...\`` 等号带空格 ⇒ shell 把
+        #   check 当命令执行，且 -q 抑制输出 ⇒ $check 恒为空 ⇒ 永远走 cp 分支。
+        #   转换目标也必须是 SmartDNS 形态（`address /域名/#`，结尾 # = 回 SOA = 拦截）。
+        grep '^||[^*]*\^$' /tmp/sdnsadnew.conf 2>/dev/null \
+            | sed -e 's:||:address /:; s:\^:/#:' > /tmp/sdnsadnew.conf.conv
+        ad_cnt=$(grep -c '^address /' /tmp/sdnsadnew.conf.conv 2>/dev/null)
+        if [ "${ad_cnt:-0}" -lt 100 ]; then
+            logger -t "SmartDNS" "广告过滤：下载到的内容不是规则文件（仅 ${ad_cnt:-0} 条），已放弃，保留原有规则"
+            rm -f /tmp/sdnsadnew.conf /tmp/sdnsadnew.conf.conv
+            return 1
+        fi
+        mv /tmp/sdnsadnew.conf.conv /tmp/anti-ad-for-smartdns.conf
+    fi
+    rm -f /tmp/sdnsadnew.conf /tmp/sdnsadnew.conf.conv
+    logger -t "SmartDNS" "广告过滤已启用：共 $ad_cnt 条规则"
+    return 0
 }
 
 Change_adbyby () {
@@ -575,8 +624,13 @@ Main () {
             logger -t "SmartDNS" "SmartDNS 正在启动..."
         fi
         Check_ss
-        if [ $(nvram get sdns_adblock) = "1" ]; then
+        if [ "$(nvram get sdns_adblock)" = "1" ]; then
                 Start_AD
+        else
+                # 关掉开关必须删掉规则文件：Get_sdns_conf 的 conf-file 行按开关生成，
+                # 而文件是全树只写不删 ⇒ 不删的话下次开机会加载上一次留下的陈旧规则，
+                # 用户以为关了其实还在过滤（比「开不了」更坏）。
+                rm -f /tmp/anti-ad-for-smartdns.conf
         fi
         Start_smartdns
         logger -t "SmartDNS" "SmartDNS 服务器已启动..."

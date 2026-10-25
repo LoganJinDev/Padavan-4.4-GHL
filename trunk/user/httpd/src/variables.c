@@ -1135,7 +1135,7 @@
 			{"socks5_s_password","",NULL, EVM_RESTART_SHADOWSOCKS},
 			{"lan_con","",NULL, EVM_RESTART_SHADOWSOCKS},
 			{"ss_adblock","",NULL, EVM_RESTART_SHADOWSOCKS},
-			{"ss_adblock_url","",NULL, FALSE},
+			{"ss_adblock_url","",NULL, EVM_RESTART_SHADOWSOCKS},
 			{"ss_gfwlist_url","",NULL, FALSE},
 			{"ss_chnroute_url","",NULL, FALSE},
 			{"ss_cgroups", "",NULL, EVM_RESTART_SHADOWSOCKS},
@@ -1143,6 +1143,11 @@
 			{"ss_cgoups_mem_s", "",NULL, EVM_RESTART_SHADOWSOCKS},
 			{"ss_watchcat", "",NULL, FALSE},
 			{"ss_keyword","",NULL, FALSE},
+			// 节点管理页的列表过滤档位（全部/自定义/订阅）。
+			// ★ 必须注册：validate_cgi() 只遍历 GetVariables(sid) 这张表，未注册的 POST
+			//   字段永远不会写进 nvram ⇒ 用户的筛选选择「保存即丢」。
+			//   FALSE = 改它不触发任何重启（与 ss_keyword 同理，纯前端展示状态）。
+			{"ss_list_mode","",NULL, FALSE},
 			{"ss_update_chnroute","",NULL, EVM_RESTART_SHADOWSOCKS},
 			{"ss_update_gfwlist","",NULL, EVM_RESTART_SHADOWSOCKS},
 			{"ss-tunnel_enable","",NULL, EVM_RESTART_SS_TUNNEL},
@@ -1247,7 +1252,7 @@
 			{"sdnse_ipc", "", NULL, EVM_RESTART_SMARTDNS},
 			{"sdnse_cache", "", NULL, EVM_RESTART_SMARTDNS},
 			{"sdns_adblock", "", NULL, EVM_RESTART_SMARTDNS},	
-			{"sdns_adblock_url","",NULL, FALSE},
+			{"sdns_adblock_url","",NULL, EVM_RESTART_SMARTDNS},
 			{"sdns_white", "", NULL, EVM_RESTART_SMARTDNS},
 			{"sdns_black", "", NULL, EVM_RESTART_SMARTDNS},
 			{"sdns_coredump", "", NULL, EVM_RESTART_SMARTDNS},	

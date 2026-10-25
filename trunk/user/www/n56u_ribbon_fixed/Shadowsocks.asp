@@ -14,6 +14,14 @@
 	<link rel="stylesheet" type="text/css" href="/bootstrap/css/main.css">
 	<link rel="stylesheet" type="text/css" href="/bootstrap/css/engage.itoggle.css">
 	<script type="text/javascript" src="/jquery.js?random=<% uptime(); %>"></script>
+	<!-- URL 测速的探测地址要从 dbus 回填，所以在这里同步取一次 dbconf。
+	     ★ 必须是【同步】的 <script src>，不能等页面 ready 后再 ajax：
+	       dbconf 的响应体就是 `var db_urltest=(function(){var o={};...return o;})();`，
+	       同步加载 ⇒ window.db_urltest 在本页任何 JS 跑之前就已就绪。
+	     ★ 前缀必须是 urltest_ 而不是 ss：/dbconf?p=X 是【前缀匹配】，任何 ss 开头的
+	       键都会落进 window.db_ss，而本页对 db_ss 每个键无保护地 JSON.parse
+	       ⇒ 节点下拉框多一个垃圾项、主表多一行垃圾。 -->
+	<script type="text/javascript" src="/dbconf?p=urltest&v=<% uptime(); %>"></script>
 	<script type="text/javascript" src="/bootstrap/js/bootstrap.min.js"></script>
 	<script type="text/javascript" src="/bootstrap/js/bootstrap-table.min.js"></script>
 	<script type="text/javascript" src="/bootstrap/js/bootstrap-table-zh-CN.min.js"></script>
@@ -26,6 +34,7 @@
 	<script type="text/javascript" src="/validator.js"></script>
 	<script>
 		var node_global_max = 0;
+		var ss_all_nodes = [];  // F1：db_ss 解析后的全部节点（过滤前的全集），供 showMRULESList/ss_filter_nodes 用
 		<% shadowsocks_status(); %>
 		<% dns2tcp_status(); %>
 		<% dnsproxy_status(); %>
@@ -46,6 +55,9 @@
 			init_itoggle('ss_adblock_url');
 			init_itoggle('socks5_enable');
 			init_itoggle('ss_schedule_enable', change_on);
+			// 探测地址回填：把 dbus 里的 urltest_url 反映到下拉框 / 自定义输入框上。
+			// 放在 ready 里是因为要操作 DOM；读的是 <head> 里同步加载的 db_urltest。
+			urltest_url_init();
 			$j("#tab_ss_cfg, #tab_ss_add, #tab_ss_dlink, #tab_ss_ssl, #tab_ss_cli, #tab_ss_log, #tab_ss_help").click(
 				function () {
 					var newHash = $j(this).attr('href').toLowerCase();
@@ -69,6 +81,10 @@
 			});
 			$j("#btn_aping_link").click(function () {
 				aping_dlink();
+			});
+			// URL 测延迟：与 ping 并列的第二套测速方案，走 urltest.sh。
+			$j("#btn_urltest_link").click(function () {
+				urltest_dlink();
 			});
 			$j("#s5_aut").change(function() { 
 			if($j("#s5_aut").is(':checked')){
@@ -516,6 +532,166 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				}
 			});
 		}
+
+		// ================= F1：节点分组（订阅 / 手动）=================
+		//
+		// 判据是节点 JSON 里【有没有 grouphashkey】，不是有没有 coustom：
+		//   grouphashkey = md5(订阅URL)，只有 dlink.lua:498 写 ⇒「有」= 来自订阅，忠实。
+		//   coustom:"1" 只有本页的 add_ss()（:1527 那个 DataObj）写 ⇒「有」= 走的手动入口；
+		//   而 dlink.lua:644 对【无 coustom 的老节点】只记一行日志、并不删除 ⇒「无 coustom」
+		//   既可能是手动节点、也可能是历史遗留节点，反推不出来。
+		function ss_node_is_sub(o) {
+				return !!(o && typeof (o.grouphashkey) != "undefined" && o.grouphashkey !== "");
+		}
+
+		// 按 #ss_list_mode 的当前值过滤 ss_all_nodes。
+		//   a = 全部节点 / d = 自定义节点（手动）/ c = 订阅节点
+		// ★ 节点下拉框与主表都调本函数 ⇒ 两处口径不可能分叉。
+		function ss_filter_nodes() {
+				if (!ss_all_nodes || ss_all_nodes.length === 0) {
+						return [];
+				}
+				var sel = document.getElementById("ss_list_mode");
+				var mode = sel ? sel.value : "a";
+				if (mode != "c" && mode != "d") {
+						return ss_all_nodes;
+				}
+				var out = [];
+				for (var i = 0; i < ss_all_nodes.length; i++) {
+						var isSub = ss_node_is_sub(ss_all_nodes[i]);
+						if ((mode == "c" && isSub) || (mode == "d" && !isSub)) {
+								out.push(ss_all_nodes[i]);
+						}
+				}
+				return out;
+		}
+
+		// 切换筛选条件：数据没变、只是显示口径变了 ⇒ 本地重算，不重新发请求。
+		function ss_apply_filter() {
+				if (!ss_all_nodes || ss_all_nodes.length === 0) {
+						// 页面还没拉到节点（或真没节点）：让 bootstrapTable 走它自己的 ajax 重新拉一遍
+						$j('#table99').bootstrapTable('refresh');
+						return;
+				}
+				ss_fill_node_lists();
+				$j('#table99').bootstrapTable('load', ss_filter_nodes());
+		}
+
+		// 重建三个节点下拉框（TCP / UDP / SOCKS5）。
+		function ss_fill_node_lists() {
+				var nodeList = document.getElementById("nodeList"); // 获取TCP节点
+				var unodeList = document.getElementById("u_nodeList"); // 获取UDP节点
+				var s5nodeList = document.getElementById("s5_nodeList"); // 获取SOCK5节点
+				if (!nodeList || !unodeList || !s5nodeList) {
+						return;
+				}
+				nodeList.options.length = 1; // 清除TCP旧节点，准备获取新列表信息
+				unodeList.options.length = 1; // 清除UDP旧节点，准备获取新列表信息
+				s5nodeList.options.length = 1; // 清除SOCK5旧节点，准备获取新列表信息
+				var view = ss_filter_nodes();
+				for (var i = 0; i < view.length; i++) {
+						var o = view[i];
+						// 判断下怕获取失败 ，括号是运算的问题
+						var text = '[ ' + (o.type ? o.type : "类型获取失败") + ' ] ' + (o.alias ? o.alias : "名字获取失败");
+						nodeList.options.add(new Option(text, o.ids)); // 通过 replace 把不要的字符去掉
+						unodeList.options.add(new Option(text, o.ids));
+						s5nodeList.options.add(new Option(text, o.ids));
+				}
+				// ★ 原来这段排序+默认选中写在 for 循环体内（每个节点重排一遍，O(n²)）。
+				//   移出循环行为完全一致（排序幂等、选中只认第一个），只是不再重复做无用功。
+				ss_sort_node_list('#nodeList');
+				ss_sort_node_list('#u_nodeList');
+				ss_sort_node_list('#s5_nodeList');
+				document.form.global_server.value = '<% nvram_get_x("","global_server"); %>';
+				document.form.udp_relay_server.value = '<% nvram_get_x("","udp_relay_server"); %>';
+				document.form.socks5_enable.value = '<% nvram_get_x("","socks5_enable"); %>';
+		}
+
+		// 节点号从大到小排 + 默认选中第一项（与原逻辑逐字一致）。
+		// ★ 选择器用的是「直接子代」（>option）：一旦给下拉框加 <optgroup>，这里会静默地
+		//   匹配到 0 个元素（不报错、不排序、不设 selected）—— 所以「来源」分组信息
+		//   走表格的列，不走进 <optgroup>。
+		function ss_sort_node_list(sel) {
+				$j(sel + '>option').sort(function (a, b) {
+						var aText = $j(a).val() * 1;
+						var bText = $j(b).val() * 1;
+						if (aText > bText) return -1;
+						if (aText < bText) return 1;
+						return 0;
+				}).appendTo(sel);
+				$j(sel + '>option').eq(0).attr("selected", "selected");
+		}
+
+		// 子分组：grouphashkey → 订阅显示名。
+		//
+		// ★ 为什么能靠【顺序】对应、不需要在 JS 里算 md5：
+		//   dlink.lua:494 的外层循环是 for k, url in ipairs(subscribe_url)，节点 id（ssrindex）
+		//   按订阅顺序递增 ⇒「每组最小节点 id 的升序」=「订阅 URL 的行序」。
+		//   update_dlink.sh:14 的 grep -v '^#' | grep -v "^$" 与 dlink.lua 读 /tmp/dlist.txt
+		//   同序同过滤 ⇒ 本页 textarea 里看到的行序就是 dlink.lua 看到的顺序。
+		// ★ 数量对不上就【全部】回落「订阅N」，绝不能错位贴名 —— 错位的名字比没有名字更坏。
+		function ss_sub_names() {
+				var seen = {}, groups = [];
+				for (var i = 0; i < ss_all_nodes.length; i++) {
+						var o = ss_all_nodes[i];
+						if (!ss_node_is_sub(o)) {
+								continue;
+						}
+						var h = String(o.grouphashkey);
+						var id = parseInt(o.ids, 10);
+						if (!(h in seen)) {
+								seen[h] = { key: h, min: id };
+								groups.push(seen[h]);
+						} else if (id < seen[h].min) {
+								seen[h].min = id;
+						}
+				}
+				groups.sort(function (a, b) { return a.min - b.min; });
+
+				// 订阅 URL 列表就在本 tab 的 textarea 里（服务端 nvram_dump 已经渲染进去了，
+				// tab 藏着也仍在 DOM 里）。★ 本函数只从 showMRULESList 的 ajax 回调里调 ——
+				// 写在脚本顶层时这个 textarea 还没被解析出来。
+				var ta = document.getElementsByName("scripts.ss_dlink.sh")[0];
+				var urls = [];
+				if (ta) {
+						var rows = String(ta.value).split(/\r?\n/);
+						for (var j = 0; j < rows.length; j++) {
+								var t = rows[j].replace(/^\s+|\s+$/g, '');
+								// 与 update_dlink.sh:14 同款过滤：空行与 # 开头的注释行都不算一个源
+								if (t && t.charAt(0) != '#') {
+										urls.push(t);
+								}
+						}
+				}
+
+				var ok = (urls.length === groups.length);
+				var names = {};
+				for (var g = 0; g < groups.length; g++) {
+						names[groups[g].key] = ok ? ss_sub_label(urls[g], g + 1) : ('订阅' + (g + 1));
+				}
+				return names;
+		}
+
+		// 订阅显示名：主机名 + 末段路径，截断到 24 字符；解析不出来回落「订阅N」。
+		// 手写正则而不用 new URL()：本页跑在路由器上的老 WebKit + jQuery 1.x 环境，
+		// 不假设 URL 构造器存在。
+		function ss_sub_label(url, n) {
+				var fallback = '订阅' + n;
+				var m = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^\/?#]+)([^?#]*)/.exec(url);
+				if (!m) {
+						return fallback;
+				}
+				var host = m[1].replace(/^[^@]*@/, '').replace(/:\d+$/, '');
+				var seg = m[2].replace(/\/+$/, '').split('/');
+				var last = seg[seg.length - 1];
+				var name = last ? (host + '/' + last) : host;
+				if (name.length > 24) {
+						name = name.substring(0, 23) + '…';
+				}
+				return name || fallback;
+		}
+
+
 		function showMRULESList() {
 					$j('#table99').bootstrapTable({
 						//data: myss,
@@ -539,70 +715,42 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 							});
 					//显示节点下拉列表 by 花妆男
 					// 渲染父节点  obj 需要渲染的数据 keyStr key需要去除的字符串
+					// ★ F1：先把 db_ss 解析成一份节点数组，下面两处（节点下拉框、主表）都从它取数。
+					//   只认 ssconf_basic_json_<数字> 这种键：/dbconf?p=ss 是【前缀匹配】，
+					//   将来若有别的 ss 开头的键混进来，这里会把它挡在节点列表之外
+					//   （实测当前 41 个键全是节点，这层过滤是防御性的，与 xrayroute.js 的 nodes() 同款）。
+					// ★ node_global_max 必须对【全部】节点求最大 id，不能只对过滤后的结果求 ——
+					//   否则「添加节点」会算出一个已存在的 id 并覆盖掉真实节点（:1533 的 node_global_max += 1）。
 					var keyStr = "ssconf_basic_json_";
-					var nodeList = document.getElementById("nodeList"); // 获取TCP节点
-					var unodeList = document.getElementById("u_nodeList"); // 获取UDP节点
-					var s5nodeList = document.getElementById("s5_nodeList"); // 获取SOCK5节点
-					nodeList.options.length=1; // 清除TCP旧节点，准备获取新列表信息
-					unodeList.options.length=1;// 清除UDP旧节点，准备获取新列表信息
-					s5nodeList.options.length=1;// 清除SOCK5旧节点，准备获取新列表信息
+					ss_all_nodes = [];
 					for (var key in db_ss) { // 遍历对象
-						var optionObj = JSON.parse(db_ss[key]); // 字符串转为对象
-						//if(optionObj.ping != "failed"){   //过滤ping不通的节点
-						var text = '[ ' + (optionObj.type ? optionObj.type : "类型获取失败") + ' ] ' + (optionObj.alias ? optionObj.alias : "名字获取失败"); // 判断下怕获取失败 ，括号是运算的问题
-						// 添加 
-						nodeList.options.add(new Option(text, key.replace(keyStr, ''))); // 通过 replacce把不要的字符去掉
-						unodeList.options.add(new Option(text, key.replace(keyStr, ''))); // 通过 replacce把不要的字符去掉
-						s5nodeList.options.add(new Option(text, key.replace(keyStr, ''))); // 通过 replacce把不要的字符去掉
-						$j('#nodeList>option').sort(function (a, b) {
-							var aText = $j(a).val() * 1;
-							var bText = $j(b).val() * 1;
-							if (aText > bText) return -1;
-							if (aText < bText) return 1;
-							return 0;
-						}).appendTo('#nodeList');
-						$j('#nodeList>option').eq(0).attr("selected", "selected");
-						//udp列表
-						$j('#u_nodeList>option').sort(function (a, b) {
-							var aText = $j(a).val() * 1;
-							var bText = $j(b).val() * 1;
-							if (aText > bText) return -1;
-							if (aText < bText) return 1;
-							return 0;
-						}).appendTo('#u_nodeList');
-						$j('#u_nodeList>option').eq(0).attr("selected", "selected");
-						//s5列表
-						$j('#s5_nodeList>option').sort(function (a, b) {
-							var aText = $j(a).val() * 1;
-							var bText = $j(b).val() * 1;
-							if (aText > bText) return -1;
-							if (aText < bText) return 1;
-							return 0;
-						}).appendTo('#s5_nodeList');
-						$j('#s5_nodeList>option').eq(0).attr("selected", "selected");
-						//$j('#nodeList').selectpicker('val', '<% nvram_get_x("","global_server"); %>'); //主服务器列表默认
-						//$j('#u_nodeList').selectpicker('val', '<% nvram_get_x("","udp_relay_server"); %>'); //UDP服务器列表默认
-						document.form.global_server.value = '<% nvram_get_x("","global_server"); %>';
-						document.form.udp_relay_server.value = '<% nvram_get_x("","udp_relay_server"); %>';
-						document.form.socks5_enable.value = '<% nvram_get_x("","socks5_enable"); %>';
-						//}
+										if (key.indexOf(keyStr) !== 0) {
+															continue;
+										}
+										var node_id = key.replace(keyStr, '');
+										if (!/^\d+$/.test(node_id)) {
+															continue;
+										}
+										var dbss = JSON.parse(db_ss[key]); // 字符串转为对象
+										dbss.ids = node_id;
+										ss_all_nodes.push(dbss);
+										var node_i = parseInt(node_id, 10);
+										if (node_i > node_global_max) {
+															node_global_max = node_i;
+										}
 					}
-					//订阅节点表格
-					var myss = new Array();
-					var i = 0;
-					for (var key in db_ss) { // 遍历对象
-						var dbss = JSON.parse(db_ss[key])
-						dbss.ids = key.replace("ssconf_basic_json_", '');
-						myss[i] = dbss;
-						i = i + 1;
-						if (myss != null) {
-							var node_i = parseInt(key.replace("ssconf_basic_json_", ''));
-							if (node_i > node_global_max) {
-								node_global_max = node_i;
-							}
-						}
+					// F1 子分组：给每个节点贴上「来源」显示名，供表格的「来源」列用。
+					var subNames = ss_sub_names();
+					for (var ni = 0; ni < ss_all_nodes.length; ni++) {
+										if (ss_node_is_sub(ss_all_nodes[ni])) {
+															ss_all_nodes[ni].src_name = subNames[String(ss_all_nodes[ni].grouphashkey)] || '订阅';
+										} else {
+															ss_all_nodes[ni].src_name = '手动';
+										}
 					}
-							$j('#table99').bootstrapTable('load', myss);
+					// 三个节点下拉框与主表共用同一个过滤口径（ss_filter_nodes），口径不会分叉
+					ss_fill_node_lists();
+					$j('#table99').bootstrapTable('load', ss_filter_nodes());
 						  },
 						  error:function(error){
 							console.log(error);
@@ -644,6 +792,13 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 							valign: 'middle',
 							width: '150px'
 						}, {
+												field: 'src_name',
+												title: '来源',
+												align: 'center',
+												valign: 'middle',
+												width: '90px'
+
+						}, {
 							field: 'ping',
 							title: 'ping',
 							align: 'center',
@@ -658,6 +813,15 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 							align: 'center',
 							valign: 'middle',
 							width: '50px'
+						}, {
+												field: 'urltest',
+												title: 'URL延迟',
+												cellStyle: urlTestCellStyle,
+												formatter: urlTestFormatter,
+												align: 'center',
+												valign: 'middle',
+												width: '60px'
+
 						}, {
 							field: 'operate',
 							title: '操作',
@@ -708,6 +872,32 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			}
 			return result;
 		}
+
+		// F2：URL 测延迟的单元格底色。
+		// ★ 档位与 ping 的 cellStylesales 刻意不同（1000/2000 而不是 100/300）：
+		//   ping 量的是到服务器的往返（几十 ms 量级），URL 测的是「经这个节点完整跑一次 HTTP」，
+		//   含 DNS + TCP + TLS + 首字节，正常值本来就在几百 ms ⇒ 套 ping 的档位会全屏飘红。
+		function urlTestCellStyle(value, row, index) {
+				if (typeof (value) == "undefined" || value === null || value === "") { return "" }
+				// ★ 必须显式判 "failed"：失败时 urltest_write.lua 写的是【字符串】，
+				//   而 value * 1 会得到 NaN，落到下面 isNaN 分支也返回空 —— 那就把「测过且失败」
+				//   显示成了「还没测」，恰好把最该看见的信号藏起来。
+				if (value === "failed") { return { css: { background: '#f44336', color: '#000' } }; }
+				var v = value * 1;
+				if (isNaN(v)) { return "" }
+				if (v < 1000) { return { css: { background: '#04B404', color: '#000' } }; }
+				if (v < 2000) { return { css: { background: '#ffeb3b', color: '#000' } }; }
+				return { css: { background: '#f44336', color: '#000' } };
+		}
+		// F2：URL 测延迟的单元格文本。
+		function urlTestFormatter(value, row, index) {
+				if (typeof (value) == "undefined" || value === null || value === "") { return "-" }
+				if (value === "failed") { return "failed" }
+				var v = value * 1;
+				if (isNaN(v)) { return "-" }
+				return v + "ms";
+		}
+
 		function actionFormatter(value, row, index) {
 			return [
 				'<a class="edit_ss" href="javascript:void(0)" title="编辑">编辑</a>',
@@ -968,6 +1158,226 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				}
 			});
 		}
+
+		// ================= F2：真实 URL 测延迟 =================
+		//
+		// 与 ping 的区别：ping 量的是「到节点服务器的 ICMP/TCP 可达性」，本功能量的是
+		// 「经这个节点自己的 socks 出口跑一次完整 HTTP 请求要多久」—— 后者才是用户真正
+		// 感知到的「打开网页快不快」。
+		//
+		// ★ 探测地址下拉框（内置 7 个 generate_204 端点 + 「自定义…」）。
+		//   选中值存 dbus 键 urltest_url，urltest.sh 自己 dbus get 它，为空则用它的内置默认。
+		//   ★ URL 绝不能走 argv：web_ex.c 的 SystemCmd[128] 会静默截断到 127 字节。
+		var URLTEST_URLS = [
+				"http://www.gstatic.com/generate_204",
+				"http://www.google.com/generate_204",
+				"http://connectivitycheck.gstatic.com/generate_204",
+				"http://cp.cloudflare.com/generate_204",
+				"http://www.msftconnecttest.com/connecttest.txt",
+				"http://detectportal.firefox.com/success.txt",
+				"http://www.baidu.com/"
+		];
+
+		// 回填：把 dbus 里的 urltest_url 反映到下拉框 / 自定义输入框上。
+		// 读的是 <head> 里【同步加载】的 window.db_urltest（不是 ajax）。
+		// ★ 这里只切显示、不写 dbus —— 否则每开一次页面都会往 flash 写一次。
+		function urltest_url_init() {
+				var sel = document.getElementById("urltest_url_sel");
+				if (!sel) {
+						return;
+				}
+				var cur = "";
+				if (typeof (window.db_urltest) != "undefined" && db_urltest &&
+						typeof (db_urltest.urltest_url) != "undefined") {
+						cur = String(db_urltest.urltest_url);
+				}
+				sel.options.length = 0;
+				var hit = -1;
+				for (var i = 0; i < URLTEST_URLS.length; i++) {
+						sel.options.add(new Option(URLTEST_URLS[i], URLTEST_URLS[i]));
+						if (URLTEST_URLS[i] === cur) {
+								hit = i;
+						}
+				}
+				sel.options.add(new Option("自定义…", "__custom__"));
+				if (cur === "") {
+						// dbus 里没存过 ⇒ 显示内置默认（与 urltest.sh 的 DEFAULT_URL 一致）
+						sel.selectedIndex = 0;
+				} else if (hit >= 0) {
+						sel.selectedIndex = hit;
+				} else {
+						// 存的是清单外的值 ⇒ 落到「自定义」并把值填进输入框
+						sel.selectedIndex = URLTEST_URLS.length;
+						var inp = document.getElementById("urltest_url_custom");
+						if (inp) {
+								inp.value = cur;
+						}
+				}
+				urltest_url_toggle();
+				// 上次运行的结果也一并回显，免得状态栏空着
+				var st = document.getElementById("urltest_status_txt");
+				if (st && typeof (window.db_urltest) != "undefined" && db_urltest &&
+						typeof (db_urltest.urltest_status) != "undefined") {
+						st.innerHTML = String(db_urltest.urltest_status);
+				}
+		}
+
+		// 只切「自定义输入框」的显隐，不写 dbus。
+		function urltest_url_toggle() {
+				var sel = document.getElementById("urltest_url_sel");
+				var inp = document.getElementById("urltest_url_custom");
+				if (!sel || !inp) {
+						return;
+				}
+				inp.style.display = (sel.value === "__custom__") ? "" : "none";
+		}
+
+		// 下拉框改变：切显示 + 把预设值写回 dbus。
+		function urltest_url_change() {
+				urltest_url_toggle();
+				var sel = document.getElementById("urltest_url_sel");
+				if (sel && sel.value !== "__custom__") {
+						urltest_url_post(sel.value);
+				}
+		}
+
+		// 自定义输入框改变：形态守卫 + 写回 dbus。
+		function urltest_url_save() {
+				var inp = document.getElementById("urltest_url_custom");
+				if (!inp) {
+						return;
+				}
+				var v = inp.value.replace(/^\s+|\s+$/g, '');
+				// ★ 形态守卫：值最终会进 urltest.sh 里 curl 的参数列表。
+				//   光加引号挡不住 —— "curl -o/etc/storage/x" 是【合法 argv】，一个空格就能另起
+				//   一个选项（同「订阅内容 = 未受信输入」的既有教训：对无引号裸拼接点，
+				//   一个空格就能另起命令）。所以这里挡的是「形态」，不是「引号」。
+				//   留空 = 用内置默认，是合法状态，不拦。
+				if (v !== "" && !/^https?:\/\/[^\s]+$/i.test(v)) {
+						alert("探测地址不合法：必须以 http:// 或 https:// 开头，且不能含空格等空白字符。");
+						return;
+				}
+				inp.value = v;
+				urltest_url_post(v);
+		}
+
+		// 写 dbus 键 urltest_url。
+		// 走 /applydb.cgi?p=urltest ⇒ applydb_store 落到最后的 else 分支 dbclient_bulk
+		// （值不过 shell，没有引号/长度问题），applydb_cgi 随后自动 mtd_storage.sh save 落 flash。
+		function urltest_url_post(v) {
+				var o = {};
+				o.urltest_url = v;
+				$j.ajax({
+						url: "/applydb.cgi?p=urltest",
+						type: 'POST',
+						contentType: "application/x-www-form-urlencoded",
+						dataType: 'text',
+						data: $j.param(o),
+						error: function (xhr) {
+								alert("探测地址保存失败！");
+						},
+						success: function (response) {
+								if (typeof (window.db_urltest) == "undefined" || !db_urltest) {
+										window.db_urltest = {};
+								}
+								// 本地缓存同步：同一次会话里再选别的值时才不会拿旧值去比
+								db_urltest.urltest_url = v;
+						}
+				});
+		}
+
+		// URL 测延迟（真实 URL，经节点自己的 socks 出口）。
+		// ★ 与 ping_dlink() 的唯一区别是 POST body 里的【值】：值决定 web_ex.c 的
+		//   applydb_store 走哪个动词（"ping" → ping.sh，"urltest" → urltest.sh）。
+		//   query 里的 useping=1 / p=ss 对 POST 都是装饰性的 —— httpd.c:945 的 strsep
+		//   在 handler 之前就把 query 切掉了，触发只认 POST body 里的值。
+		//   ★ 不能改成 ?useurltest=1 而把值留成 "ping"：那会去调 ping.sh，
+		//     症状是「点了 URL 测试，结果列填的却是 ICMP 延迟」。
+		function urltest_dlink() {
+				var row = $j("#table99").bootstrapTable('getSelections');
+				if (!row || row.length === 0) {
+						alert("请先勾选要测试的节点。");
+						return;
+				}
+				var ns = {};
+				for (var key in row) {
+						ns[row[key].ids] = "urltest";
+				}
+				// ★ 不用 ctime()/dtime()：urltest.sh 自己后台脱离，success 回调会在毫秒级触发，
+				//   那对客户端计时器会立刻打出「脚本运行完成!」，而测试其实刚开跑。
+				//   进度改为轮询 dbus 的 urltest_run / urltest_status。
+				document.getElementById("btn_urltest_link").value = "URL测试中…";
+				$j.ajax({
+						url: "/applydb.cgi?useping=1&p=ss",
+						type: 'POST',
+						contentType: "application/x-www-form-urlencoded",
+						dataType: 'text',
+						data: $j.param(ns),
+						error: function (xhr) {
+								alert("脚本执行失败！！！");
+								document.getElementById("btn_urltest_link").value = "URL测试";
+						},
+						success: function (response) {
+								urltest_poll(0);
+						}
+				});
+		}
+
+		// 轮询 dbus 的 urltest_run / urltest_status，直到 run != 1 或到上限。
+		// ★ 上限不能省：重启后残留的 urltest_run=1 会让按钮永远卡在「测试中…」。
+		//   1500ms × 80 ≈ 2 分钟 —— 41 个节点 4 路并发约 1~2 分钟。
+		// ★ 只读 /dbconf?p=urltest（键很少）。不要带 ss：那会把 41 个节点的 JSON
+		//   每 1.5 秒重解析一遍。
+		function urltest_poll(n) {
+				var left = (typeof (n) == "undefined") ? 0 : n;
+				var st = document.getElementById("urltest_status_txt");
+				$j.ajax({
+						url: "/dbconf?p=urltest&_=" + (new Date()).getTime(),
+						type: 'get',
+						dataType: 'script',
+						cache: false,
+						success: function () {
+								var run = "0", status = "";
+								if (typeof (window.db_urltest) != "undefined" && db_urltest) {
+										if (typeof (db_urltest.urltest_run) != "undefined") {
+												run = String(db_urltest.urltest_run);
+										}
+										if (typeof (db_urltest.urltest_status) != "undefined") {
+												status = String(db_urltest.urltest_status);
+										}
+								}
+								if (st) {
+										st.innerHTML = status;
+								}
+								if (run === "1" && left < 80) {
+										setTimeout(function () { urltest_poll(left + 1); }, 1500);
+										return;
+								}
+								urltest_done();
+						},
+						error: function () {
+								// 读失败不该把界面永久卡在「测试中…」，但也不能无限重试
+								if (left < 80) {
+										setTimeout(function () { urltest_poll(left + 1); }, 1500);
+										return;
+								}
+								urltest_done();
+						}
+				});
+		}
+
+		// 收尾：恢复按钮 + 刷新表格把新结果读进来。
+		// ★ refresh 会走 bootstrapTable 的 options.ajax（本表初始化时就给了自定义 loader），
+		//   那条 loader 重新 GET /dbconf?p=ss 并再跑一遍 showMRULESList 里的那段 ⇒ 新值进表、
+		//   过滤口径也一并重新应用。ping_dlink() 用的就是这个收尾方式。
+		function urltest_done() {
+				var btn = document.getElementById("btn_urltest_link");
+				if (btn) {
+						btn.value = "URL测试";
+				}
+				$j('#table99').bootstrapTable('refresh');
+		}
+
 		function paramsMatter(value, row, index) {
 			var span = document.createElement("span");
 			span.setAttribute("title", value);
@@ -1904,18 +2314,26 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 												<table width="100%" cellpadding="4" cellspacing="0" class="table">
 													<tr>
 														<th colspan="2">
-															<select name="ss_list_mode" style="display: none" id="ss_list_mode" class="input" style="width: 100px;">
-																<option value="a">全部节点</option>
-																<option value="d">自定义节点</option>
-																<option value="c">订阅节点</option>
+															<select name="ss_list_mode" id="ss_list_mode" class="input" style="width: 100px;" onchange="ss_apply_filter();">
+																														<option value="a">全部节点</option>
+																														<option value="d">自定义节点</option>
+																														<option value="c">订阅节点</option>
 															</select>
 															<input type="button" id="btn_add_link" class="btn btn-info" value="添加/导入">
 															<input type="button" id="btn_update_link" class="btn btn-info" value="手动更新订阅" onclick="dlink();">
 															<input type="button" id="btn_ping_link" class="btn btn-info" value="ping所选">
 															<input type="button" id="btn_aping_link" class="btn btn-info" value="ping全部">
+															<input type="button" id="btn_urltest_link" class="btn btn-info" value="URL测试">
 															<input type="button" id="btn_del_link" class="btn btn-danger" value="删除节点">
 															<input type="button" id="btn_rest_link" class="btn btn-danger" value="清空节点" onclick="ddlink();">
 															<input type="button" id="btn_ctime" style="display:none;" class="btn btn-good" value="正在运行脚本:0s" onclick="">
+															<!-- F2：URL 测试的探测地址。选中值存 dbus 键 urltest_url，urltest.sh 自己 dbus get 它。 -->
+															<div style="margin-top: 6px;">
+																														<span>URL 测试探测地址：</span>
+																														<select id="urltest_url_sel" class="input" style="width: 300px;" onchange="urltest_url_change();"></select>
+																														<input type="text" id="urltest_url_custom" class="input" style="width: 300px; display: none;" maxlength="200" placeholder="http://example.com/generate_204" onchange="urltest_url_save();">
+																														<span id="urltest_status_txt" style="margin-left: 8px; color: #666;"></span>
+															</div>
 														</th>
 													</tr>
 												</table>
@@ -2455,6 +2873,12 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 														<th width="50%"><#Filter_file#></th>
 														<td>
 															<input type="text" class="input" size="15" name="ss_adblock_url" style="width: 280px"  value="<% nvram_get_x("","ss_adblock_url"); %>" />
+														</td>
+													</tr>
+													<tr>
+														<th width="50%"><#Filter_file#></th>
+														<td style="border-top: 0 none;" colspan="2">
+															<input type="button" id="btn_connect_5" class="btn btn-info" value="<#menu5_17_2#>" onclick="submitInternet('Update_adblock');">
 														</td>
 													</tr>
 													<tr>

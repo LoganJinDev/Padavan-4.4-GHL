@@ -379,7 +379,7 @@ dns-forward-max=1000
 EOF
 		# restart dnsmasq
 		killall dnsmasq
-		/user/sbin/dnsmasq >/dev/null 2>&1 &
+		/usr/sbin/dnsmasq >/dev/null 2>&1 &
 	}
 	case "$run_mode" in
 	router)
@@ -418,23 +418,66 @@ EOF
 	/sbin/restart_dhcpd
 }
 
+# 广告过滤：下载规则文件并落盘到 /tmp/dnsmasq.dom/anti-ad-for-dnsmasq.conf
+# ★ 调用点在 ssp_start 之前（见文件末尾的 case start），而 dnsmasq 的重启发生在
+#   ssp_start 之内（start_dns → start_chinadns → restart_dhcpd）⇒ 文件先落地、后加载。
+#   所以「开关打开没效果」只有两个硬前提：① ss_enable=1（否则整条链不跑）；
+#   ② start_redir_tcp 成功（否则走不到 start_dns，文件写了但 dnsmasq 不重启）。
 start_AD() {
 	mkdir -p /tmp/dnsmasq.dom
-	curl -s -o /tmp/adnew.conf --connect-timeout 10 --retry 3 $(nvram get ss_adblock_url)
-	if [ ! -f "/tmp/adnew.conf" ]; then
-		log "广告过滤功能未开启或者过滤地址失效，网络异常等 ！！！"
-	else
-		log "去广告文件下载成功广告过滤功能已启用..."
-		if [ -f "/tmp/adnew.conf" ]; then
-			check = `grep -wq "address=" /tmp/adnew.conf`
-	  		if [ ! -n "$check" ] ; then
-				cp /tmp/adnew.conf /tmp/dnsmasq.dom/anti-ad-for-dnsmasq.conf
-	  		else
-			    cat /tmp/adnew.conf | grep ^\|\|[^\*]*\^$ | sed -e 's:||:address\=\/:' -e 's:\^:/0\.0\.0\.0:' > /tmp/dnsmasq.dom/anti-ad-for-dnsmasq.conf
-			fi
-		fi
+	ad_url="$(nvram get ss_adblock_url)"
+
+	# 形态守卫。这个值来自网页输入框，最终会进 curl 的参数列表。
+	# ★ 必须挡「以 - 开头」：`curl ... "$URL"` 里 $URL 虽然加了引号、不会发生词分割，
+	#   但 curl 收到单个 argv "-o/etc/storage/x" 时会把它当成写文件选项 ——
+	#   引号挡不住，因为它本来就是一个合法 argv。（同 ssrcrules_update.sh 的 url_ok()）
+	case "$ad_url" in
+	''|*[![:print:]]*|*[[:space:]]*|-*)
+		log "广告过滤：下载地址为空或含空白/控制字符，已跳过本次下载"
+		return 1
+		;;
+	esac
+
+	rm -f /tmp/adnew.conf /tmp/adnew.conf.conv
+	# --fail：HTTP 4xx/5xx 直接算失败。否则 404 的错误页 / 门户认证页会被当规则存下来。
+	# --max-time：原代码只有 --connect-timeout，挡不住「连上了但一直不发数据」。
+	#   60s × (1 + 2 次重试) = 本次下载的最坏耗时上限，同时给 httpd 的同步阻塞划了界。
+	if ! curl -s -f -o /tmp/adnew.conf --connect-timeout 10 --max-time 60 --retry 2 "$ad_url"; then
+		log "广告过滤：规则下载失败（网络异常或地址失效），保留原有规则不覆盖"
+		rm -f /tmp/adnew.conf
+		return 1
 	fi
-	rm -f /tmp/adnew.conf
+
+	# 内容合法性：curl 的 -o 在传输【之前】就建文件 ⇒ 单看「文件存在」恒为真
+	# （原代码的 [ ! -f ] 分支因此永远不可达，连接失败也照样打「下载成功」）。
+	# 这里既看格式也看条数：被截断的半成品同样要挡掉，不能覆盖已有的好规则。
+	#
+	# ★ 格式判据必须是 '^address=/' 而不是 '^address='（实测两个官方规则文件的头部）：
+	#   dnsmasq 版 anti-ad-for-dnsmasq.conf → `address=/000491b06a.com/`
+	#   SmartDNS 版 anti-ad-for-smartdns.conf → `address /000491b06a.com/#`（空格分隔 + 结尾 #）
+	#   两者【不通用】。松判据 '^address=' 挡不住空格形态的文件，而 dnsmasq 遇到无法
+	#   解析的 conf 行会【直接拒绝启动】⇒ 一旦 SmartDNS 版文件被丢进 conf-dir，
+	#   整个 DNS 都会挂。所以这里必须严判：宁可真规则被拒，也不能放进坏行。
+	ad_cnt=$(grep -c '^address=/' /tmp/adnew.conf 2>/dev/null)
+	if [ "${ad_cnt:-0}" -ge 100 ]; then
+		cp /tmp/adnew.conf /tmp/dnsmasq.dom/anti-ad-for-dnsmasq.conf
+	else
+		# 不是 dnsmasq 原生格式 ⇒ 可能是 ABP 格式（||domain^），转换后再判一次。
+		# ★ 原代码这一段是死代码：`check = \`grep -wq ...\`` 等号带空格 ⇒ shell 把
+		#   check 当命令执行，且 -q 抑制输出 ⇒ $check 恒为空 ⇒ 永远走 cp 分支。
+		grep '^||[^*]*\^$' /tmp/adnew.conf 2>/dev/null \
+			| sed -e 's:||:address=/:; s:\^:/0.0.0.0:' > /tmp/adnew.conf.conv
+		ad_cnt=$(grep -c '^address=/' /tmp/adnew.conf.conv 2>/dev/null)
+		if [ "${ad_cnt:-0}" -lt 100 ]; then
+			log "广告过滤：下载到的内容不是规则文件（仅 ${ad_cnt:-0} 条），已放弃，保留原有规则"
+			rm -f /tmp/adnew.conf /tmp/adnew.conf.conv
+			return 1
+		fi
+		mv /tmp/adnew.conf.conv /tmp/dnsmasq.dom/anti-ad-for-dnsmasq.conf
+	fi
+	rm -f /tmp/adnew.conf /tmp/adnew.conf.conv
+	log "广告过滤已启用：共 $ad_cnt 条规则"
+	return 0
 }
 
 # ========== 启动 Socks5 代理 ==========
@@ -675,8 +718,15 @@ ressp() {
 
 case $1 in
 start)
-	if [ $(nvram get ss_adblock) = "1" ]; then
+	if [ "$(nvram get ss_adblock)" = "1" ]; then
 		start_AD
+	else
+		# ★ 关闭时必须【删掉规则文件】，只关开关不够：
+		#   ss-rules 的 ipset_r() 会无条件把 conf-dir=/tmp/dnsmasq.dom/ 写回 dnsmasq.conf
+		#   （flush_r() 删掉的那一行紧接着又被加回来）⇒ 不删文件的话，关掉开关后
+		#   dnsmasq 一重启照样加载陈旧的反广告规则 —— 用户以为关了，其实没关。
+		#   原代码全树只有写入、没有任何 rm，只有重启路由器（/tmp 是 tmpfs）才真关得掉。
+		rm -f /tmp/dnsmasq.dom/anti-ad-for-dnsmasq.conf
 	fi
 	ssp_start
 	echo 3 > /proc/sys/vm/drop_caches

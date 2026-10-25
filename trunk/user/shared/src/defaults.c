@@ -603,7 +603,11 @@ struct nvram_pair router_defaults[] = {
 	{ "ss_adblock", "0" },
 	{ "ss_adblock_url", "https://anti-ad.net/anti-ad-for-dnsmasq.conf"},
 	{ "ss_update_chnroute", "1" },
-	{ "ss_chnroute_url", "https://ispip.clang.cn/all_cn.txt"},
+	// 必须用 _apnic 版：clang.cn 同一站点发布 IPNetDB 与 APNIC 两个变体，
+	// all_cn.txt 是 IPNetDB 版，实测比 APNIC 少 17.57% 的国内地址空间（含 1.3.0.0/16 等整块分配），
+	// 而 all_cn_apnic.txt 与 apnic 官方数据直连转换的结果【双向零缺口】(342,940,928 地址 / 4118 段)。
+	// 以前 update_chnroute.sh 的极性写反、这个字段不生效，所以用哪个都无所谓；现在生效了，必须用 _apnic。
+	{ "ss_chnroute_url", "https://ispip.clang.cn/all_cn_apnic.txt"},
 	{ "ss_update_gfwlist", "1" },
 	{ "ss_gfwlist_url", "https://cdn.jsdelivr.net/gh/YW5vbnltb3Vz/domain-list-community@release/gfwlist.txt"},
 	{ "ss_type", "0" },
