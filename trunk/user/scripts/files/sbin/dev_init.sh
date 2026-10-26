@@ -17,7 +17,21 @@ else
 	# 这里按物理内存自适应：≥256MB 的机型给 50M，小内存机型维持 24M 不动。
 	# ★ tmpfs 的 size= 是【上限】不是预分配，调大本身不占 RAM，只有真写进去才占，
 	#   所以对内存富裕的机型没有代价。
-	mem_total=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)
+	# ★★ 这里【绝不能】写成 `awk ... 2>/dev/null` —— 本内核 CONFIG_DEVTMPFS is not set，
+	#    开机时 /dev 还是 squashfs 里的只读目录（squashfs 存不了字符设备节点），
+	#    /dev/null 要等本脚本【后面】把 tmpfs 挂到 /dev 并跑完 mdev -s 之后才诞生。
+	#    而这段代码在那两件事【之前】—— 那个时点上 /dev/null 尚不存在，`2>/dev/null`
+	#    重定向必然失败；重定向一失败，整条简单命令就【不执行】了，mem_total 会是空串，
+	#    于是静默退回 24M（真机实证：同一段代码在当前环境跑得对，开机时却算不出 50M）。
+	#    所以只用纯 shell 读 /proc/meminfo（/proc 在本脚本开头就挂好了）。
+	#    循环体里只用内建命令（[ / 赋值 / break），不会吞掉 stdin。
+	mem_total=0
+	while read _k _v _rest; do
+		if [ "$_k" = "MemTotal:" ]; then
+			mem_total="$_v"
+			break
+		fi
+	done < /proc/meminfo
 	# 非数字 / 读不到 ⇒ 当 0 处理，走保守的 24M，别让 -ge 比较报错
 	case "$mem_total" in
 	''|*[!0-9]*) mem_total=0 ;;
