@@ -2063,8 +2063,12 @@ applydb_store(dbclient *client, const char *name, char *body)
 	char usedlink[] = "dlink";
 	char useddlink[] = "ddlink";
 	char useurltest[] = "urltest";
+	/* urltest 节点号的聚合缓冲，见循环结束后的聚合调用。
+	 * 448 是给 doSystem 的 cmd_buf(512) 留出前缀 "/etc_ro/ss/urltest.sh " 的余量 */
+	char urlbuf[448];
 	size_t nlen = strlen(name);
 	int i, j;
+	int urlcnt = 0;
 
 	/* ⚠️ 顺序很关键：这里**不**整体 unescape，先按 '&' 切分、再在下面的循环里
 	 * 逐个解码。老代码是先把整段查询串 unescape 再 strtok，那样值里被百分号
@@ -2074,6 +2078,7 @@ applydb_store(dbclient *client, const char *name, char *body)
 	 * 键名都是 ASCII 字母数字下划线，encodeURIComponent 不会改动它们，所以在
 	 * 未解码的串上做前缀匹配是安全的。
 	 * i < 100 的边界不能省：dbjson 只有 100 项，超过就会写越界 */
+	urlbuf[0] = '\0';
 	result = strtok(body, "&");
 	i = 0;
 	while (result != NULL && i < 100) {
@@ -2118,8 +2123,15 @@ applydb_store(dbclient *client, const char *name, char *body)
 			 *   用户看到的就是界面卡死。详见 urltest.sh 顶部。
 			 * ★ dbvar 是 POST 的键 = 裸数字节点号（与 ping 同构）。探测 URL 绝不能
 			 *   走 argv：SystemCmd 只有 128 字节，一条 URL 就吃掉大半，会被静默截断。
-			 *   所以 URL 由脚本自己 dbus get。 */
-			doSystem("/etc_ro/ss/urltest.sh %s", dbvar);
+			 *   所以 URL 由脚本自己 dbus get。
+			 * ★ 这里【只收集、不调用】—— 聚合调用见循环结束之后。原因见那段注释。 */
+			if (urlcnt == 0) {
+				snprintf(urlbuf, sizeof(urlbuf), "%s", dbvar);
+			} else if (strlen(urlbuf) + strlen(dbvar) + 2 <= sizeof(urlbuf)) {
+				strcat(urlbuf, " ");
+				strcat(urlbuf, dbvar);
+			}
+			urlcnt++;
 		} else
 			/* 走 dbus 的 socket 协议直写，绕开 shell。
 			 *
@@ -2134,6 +2146,23 @@ applydb_store(dbclient *client, const char *name, char *body)
 			 *   ③ doSystem 的 cmd_buf 只有 512 字节，长节点 JSON 会被截断。
 			 * dbclient_bulk 按显式长度把键、值分开送出，这三个限制都不存在 */
 			dbclient_bulk(client, "set", dbvar, strlen(dbvar), dbval, strlen(dbval));
+	}
+
+	/* ★ URL 测速的聚合调用 —— 一次 POST 里勾了 N 个节点，脚本只能调【一次】。
+	 *
+	 * 原实现在上面的循环里逐键 doSystem("/etc_ro/ss/urltest.sh %s", dbvar)，
+	 * 即勾 3 个节点就顺序调 3 次。而 urltest.sh 有 600 秒的时间戳锁
+	 * （LOCK_STALE），第 1 次调用写下锁并后台跑起来，第 2、3 次立刻撞锁、
+	 * 打一句「已有测速在跑，请稍后再试」就退出 ⇒ 界面上勾了多个节点，
+	 * 实际只有第一个被测到，其余节点永远等不到。
+	 *
+	 * urltest.sh 的入口本来就是 NODES="$*"（吃任意多个节点号），锁也只在
+	 * 消费完全部 NODES 之后取一次，所以把 N 个节点号拼成一个参数串、循环
+	 * 结束后调一次即可。节点号是裸数字（≤3 位），41 个节点也只用 164 字节，
+	 * 远小于 doSystem 的 cmd_buf(512)；拼串时仍显式挡溢出，宁可少测几个也
+	 * 不截断出半个节点号。 */
+	if (urlcnt > 0) {
+		doSystem("/etc_ro/ss/urltest.sh %s", urlbuf);
 	}
 }
 

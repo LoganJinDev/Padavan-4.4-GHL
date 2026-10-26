@@ -568,7 +568,27 @@ ssp_start() {
 		cgroups_init
 		if start_redir_tcp; then
 			start_redir_udp
-			#start_AD
+			# 广告过滤。★ 位置只能是这里，不能挪到 ssp_start 外面 —— 它有两个硬前提：
+			#   ① 代理已经起来（start_redir_tcp 刚跑完），start_AD 里的 curl 才走得了代理。
+			#      原先这段在 case start 里、ssp_start 之前，那时代理还没起，只能直连
+			#      raw.githubusercontent.com —— 实测 14~19 秒且经常失败，走代理只要 2.56 秒。
+			#   ② 规则文件必须先落地、dnsmasq 后加载。dnsmasq 的重启发生在下面的
+			#      start_dns 里（start_chinadns 的 killall dnsmasq + restart_dhcpd），
+			#      所以这里正好是「文件已写好、dnsmasq 还没重启」的唯一窗口。
+			#      若挪到 ssp_start 之后，文件写了但 dnsmasq 不重启，反广告就不生效。
+			#   ③ 顺带修掉 restart 分支的不一致：restart 只做 ssp_close + ssp_start，
+			#      原先不碰 AD 开关 ⇒ 改了广告过滤地址、或把开关关掉之后按「应用」重启，
+			#      规则既不更新也不删。现在 start 与 restart 共用这一段。
+			if [ "$(nvram get ss_adblock)" = "1" ]; then
+				start_AD
+			else
+				# ★ 关闭时必须【删掉规则文件】，只关开关不够：
+				#   ss-rules 的 ipset_r() 会无条件把 conf-dir=/tmp/dnsmasq.dom/ 写回 dnsmasq.conf
+				#   （flush_r() 删掉的那一行紧接着又被加回来）⇒ 不删文件的话，关掉开关后
+				#   dnsmasq 一重启照样加载陈旧的反广告规则 —— 用户以为关了，其实没关。
+				#   原代码全树只有写入、没有任何 rm，只有重启路由器（/tmp 是 tmpfs）才真关得掉。
+				rm -f /tmp/dnsmasq.dom/anti-ad-for-dnsmasq.conf
+			fi
 			start_dns
 		fi
 	fi
@@ -718,16 +738,8 @@ ressp() {
 
 case $1 in
 start)
-	if [ "$(nvram get ss_adblock)" = "1" ]; then
-		start_AD
-	else
-		# ★ 关闭时必须【删掉规则文件】，只关开关不够：
-		#   ss-rules 的 ipset_r() 会无条件把 conf-dir=/tmp/dnsmasq.dom/ 写回 dnsmasq.conf
-		#   （flush_r() 删掉的那一行紧接着又被加回来）⇒ 不删文件的话，关掉开关后
-		#   dnsmasq 一重启照样加载陈旧的反广告规则 —— 用户以为关了，其实没关。
-		#   原代码全树只有写入、没有任何 rm，只有重启路由器（/tmp 是 tmpfs）才真关得掉。
-		rm -f /tmp/dnsmasq.dom/anti-ad-for-dnsmasq.conf
-	fi
+	# 广告过滤的开关判定与规则文件落地已移入 ssp_start（start_redir_tcp 之后、
+	# start_dns 之前），start 与 restart 共用，理由见那里的注释
 	ssp_start
 	echo 3 > /proc/sys/vm/drop_caches
 	;;

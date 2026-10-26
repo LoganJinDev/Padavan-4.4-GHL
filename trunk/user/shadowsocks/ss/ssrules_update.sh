@@ -249,24 +249,62 @@ main() {
 	# 清掉上次中断留下的临时文件
 	rm -f "$RULES_DIR"/.tmp.*
 
+	# ★ 统计本次真正下载成功的分类数。
+	#   update_geosite/update_geoip 的约定是 0=本次确实下载并写入了新文件，
+	#   非 0=跳过（三个源都取不到 / 分类名非法）。这两个函数每次都是无条件
+	#   下载覆盖，没有「已是最新就不下载」的路径 ⇒ 非 0 就是真失败。
+	#   全部失败时必须以非零退出：调用方 xrayctl.sh 只看退出码，否则会把
+	#   「一个都没下到」当成成功，界面上打出「更新完成并已持久化」，还会把
+	#   陈旧的 /tmp 内容重新打包写进 flash。
+	ok=0
+	bad=0
+
 	if [ $# -gt 0 ]; then
 		for spec in "$@"; do
 			case "$spec" in
 			geosite:*) update_geosite "${spec#geosite:}" ;;
 			geoip:*) update_geoip "${spec#geoip:}" ;;
-			*) log "无法识别：$spec（需写成 geosite:xxx 或 geoip:xxx）" ;;
+			*) log "无法识别：$spec（需写成 geosite:xxx 或 geoip:xxx）" ; continue ;;
 			esac
+			if [ $? -eq 0 ]; then
+				ok=$((ok + 1))
+			else
+				bad=$((bad + 1))
+			fi
 		done
 	else
 		for c in $DEFAULT_GEOSITE; do
-			update_geosite "$c"
+			if update_geosite "$c"; then
+				ok=$((ok + 1))
+			else
+				bad=$((bad + 1))
+			fi
 		done
 		for c in $DEFAULT_GEOIP; do
-			update_geoip "$c"
+			if update_geoip "$c"; then
+				ok=$((ok + 1))
+			else
+				bad=$((bad + 1))
+			fi
 		done
 	fi
 
-	log "更新结束，明细见 $LOG_FILE"
+	if [ "$ok" -eq 0 ]; then
+		log "更新失败：$bad 个分类全部跳过（源不可达或分类名非法），未写入任何新文件"
+		return 1
+	fi
+	if [ "$bad" -gt 0 ]; then
+		log "更新结束：$ok 个成功 / $bad 个跳过，明细见 $LOG_FILE"
+	else
+		log "更新结束：$ok 个全部成功，明细见 $LOG_FILE"
+	fi
+	# 给调用方（xrayctl.sh 的 do_update）一行机器可读的本次计数，它据此把状态
+	# 文案里的「本次成功几个」与「分类库现在有几个」分开说 —— 后者是
+	# summarize() 数的 $RULES_DIR 现状，与本次是否真下载无关。
+	# log() 只写 logger 与 $LOG_FILE、从不碰 stdout，所以这行是 stdout 上唯一的
+	# 机器可读输出，调用方按前缀抓取不会误命中别的内容。
+	echo "UPDATE_RESULT ok=$ok bad=$bad"
+	return 0
 }
 
 main "$@"

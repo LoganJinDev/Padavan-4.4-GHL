@@ -176,17 +176,48 @@ do_update() {
 	"$UPDATER" "$@" >"$RUN_LOG" 2>&1
 	_rc=$?
 	_s=$(summarize)
-	if [ $_rc -eq 0 ]; then
-		# 更新成功就把分类压进 flash，否则重启后 $RULES_DIR 一空，分流规则整份失效。
-		# 持久化失败不能算成更新失败 —— 分类本身是好的，只是重启后会丢，
-		# 状态文案要如实区分这两种情况
-		if persist_rules; then
-			end_run "更新完成并已持久化：$_s"
-		else
-			end_run "更新完成，但持久化失败（重启后会丢）：$_s"
+
+	# 从 $RUN_LOG 里取本次计数 —— ssrcrules_update.sh 结束时会在 stdout 打一行
+	# UPDATE_RESULT ok=N bad=M。用纯参数展开解析，不引 sed 正则。
+	# 抓不到（脚本没跑到那一步，例如 mkdir 失败直接 exit 1）时留空，文案退回
+	# 「本次结果未知」，绝不去猜一个数字。
+	_ok=""
+	_bad=""
+	_line=$(grep '^UPDATE_RESULT ' "$RUN_LOG" 2>/dev/null | tail -n 1)
+	case "$_line" in
+	UPDATE_RESULT\ ok=*)
+		_ok=${_line#UPDATE_RESULT ok=}
+		_ok=${_ok%% *}
+		_bad=${_line##*bad=}
+		;;
+	esac
+	if [ -n "$_ok" ]; then
+		_this="本次 $_ok 个成功"
+		if [ "$_bad" -gt 0 ]; then
+			_this="$_this / $_bad 个跳过"
 		fi
 	else
-		end_run "更新失败(退出码 $_rc)：$_s，详见 /tmp/ssrules.log"
+		_this="本次结果未知"
+	fi
+
+	if [ "$_rc" -eq 0 ]; then
+		# 更新成功就把分类压进 flash，否则重启后 $RULES_DIR 一空，分流规则整份失效。
+		# 持久化失败不能算成更新失败 —— 分类本身是好的，只是重启后会丢，
+		# 状态文案要如实区分这两种情况。
+		# ★ 文案里「分类库现状」四个字不能省：$_s 来自 summarize()，数的是
+		#   $RULES_DIR 里现存的文件，含上次留下的旧文件。不加这层说明的话，
+		#   「本次 1 个成功」配「23 个分类 / 611 KB」会被读成「本次下了 23 个」。
+		if persist_rules; then
+			end_run "更新完成（$_this），已持久化。分类库现状：$_s"
+		else
+			end_run "更新完成（$_this），但持久化失败（重启后会丢）。分类库现状：$_s"
+		fi
+	else
+		# 非 0 = 一个分类都没下到（ssrules_update.sh 的 main 只在 ok=0 时返回 1）。
+		# 这时【不】调 persist_rules：把陈旧的 /tmp 内容重新打包写进 flash 毫无
+		# 意义，只会白重写一遍 storage，还可能把 storage 顶到体积上限而连带
+		# 让用户其它配置全部落不了盘。
+		end_run "更新失败（$_this，退出码 $_rc），未持久化。分类库现状：$_s，详见 /tmp/ssrules.log"
 	fi
 	rm -rf "$LOCK_DIR"
 }
