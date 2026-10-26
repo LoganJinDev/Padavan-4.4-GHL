@@ -38,7 +38,7 @@
 # 结果写回：每个节点的 JSON 里加两个字段
 #     urltest      成功 = 数字毫秒；失败 = 字符串 "failed"（与 ping 字段同形）
 #     urltest_ts   本次测量的 unix 时间戳，用来区分「这轮的结果」和「上轮的残留」
-#   订阅更新不会抹掉它们：dlink.lua:657 的 `if not vv._ignore` 会跳过已有节点。
+#   订阅更新不会抹掉它们：dlink.lua:666 的 `if not vv._ignore` 会跳过已有节点。
 #
 # 状态键（供前端轮询）：
 #     urltest_run     1 = 正在测，0 = 空闲
@@ -423,8 +423,16 @@ urltest_worker() {
 	set --
 	. "$SS_MAIN" >/dev/null 2>&1 </dev/null
 	# 万一 source 失败（文件被裁过 / 路径变了），log 退化成只写 syslog，
-	# 而不是让每个调用点都报 command not found
-	command -v log >/dev/null 2>&1 || log() { logger -t shadowsocksr "$@"; }
+	# 而不是让每个调用点都报 command not found。
+	#
+	# ★ 这里必须用 `type`，不能用 `command -v`：
+	#   本设备的 busybox 没编 ENABLE_ASH_CMDCMD ⇒ `command` 根本不是内建，
+	#   `command -v X` 退化成「找一个叫 command 的外部程序」并恒失败
+	#   （真机实测：`command -v ls` → rc=127，stderr `sh: command: not found`，
+	#    对存在与不存在的命令结果完全一样）。
+	#   用 `command -v` 会让这个守卫【永远触发】，无条件把 source 进来的好 log
+	#   覆盖成只写 syslog 的桩 ⇒ worker 日志全丢、logread 为空，而功能看不出异常。
+	type log >/dev/null 2>&1 || log() { logger -t shadowsocksr "$@"; }
 
 	trap 'ut_cleanup' EXIT INT TERM
 

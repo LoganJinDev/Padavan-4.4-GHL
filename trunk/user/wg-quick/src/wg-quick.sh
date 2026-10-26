@@ -132,9 +132,29 @@ add_if() {
   local RET
   # log "Adding interface $INTERFACE..."
   cmd "ip link add $INTERFACE type wireguard"
-	if [ $? != 0 ]; then
-		local RET=$?
-		[ -e /sys/module/wireguard ] || [ ! command -v "${WG_QUICK_USERSPACE_IMPLEMENTATION:-wireguard-go}" >/dev/null ] && exit $RET
+	RET=$?
+	if [ "$RET" != 0 ]; then
+		# 上游 bash 原句：`[[ -e /sys/module/wireguard ]] || ! command -v … && exit $ret`
+		# 本移植版把它改坏了两处。下面每个 rc 都是【真机 busybox 1.24.2 实测】，
+		# 不是推断（四场景台架 + 独立 rc 探针，两次测量互相印证）：
+		#   ① `local RET=$?` 在 if 体内，取到的是上一行 `[ $? != 0 ]` 这个【测试
+		#      自己】的状态（实测恒 0），不是 `ip link add` 的退出码。
+		#   ② `[ ! command -v X ]` 把 shell 级 `!` 包进了 `[ ]`：test 按 4 个参数
+		#      解析，打 `sh: -v: unknown operand` 后以 rc=2 退出 ⇒ 该子测试【恒为
+		#      假】（实测：命令存在与不存在结果完全一样）。再叠上 `command` 本身
+		#      不是内建（未编 ENABLE_ASH_CMDCMD，`command -v ls` 实测 rc=127）。
+		# 整行于是退化成 `[ -e /sys/module/wireguard ] && exit`：
+		#      模块在   → rc=0 真 ⇒ exit，退出码取 ① 的 0
+		#      模块不在 → rc=2 假 ⇒ 不 exit，照旧往下走用户态回退
+		# 本机内核是【内建 wireguard】(/sys/module/wireguard 存在)，所以走的永远是
+		# 前一支：`ip link add` 一失败就【静默 exit 0】，脚本对外报成功，而接口根本
+		# 没建起来、配置一条没下发 —— 失败伪装成成功，比直接报错危险得多。
+		# （模块不在那支反而能到回退分支，只是回退失败时退出码同样失真。）
+		# 按上游语义重写：只有「内核模块不在 且 wireguard-go 可用」才回退用户态，
+		# 否则带着真实退出码失败。
+		if [ -e /sys/module/wireguard ] || ! type "${WG_QUICK_USERSPACE_IMPLEMENTATION:-wireguard-go}" >/dev/null 2>&1; then
+			exit "$RET"
+		fi
 		echo "[!] Missing WireGuard kernel module. Falling back to slow userspace implementation." >&2
 		cmd "${WG_QUICK_USERSPACE_IMPLEMENTATION:-wireguard-go}" "$INTERFACE"
 	fi

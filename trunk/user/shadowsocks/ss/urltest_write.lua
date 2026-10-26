@@ -9,7 +9,7 @@ local cjson = require "cjson"
 --   空串或非数字 ⇒ urltest = "failed"（与 ping 失败时的字符串同形）
 --   无论成败都写 urltest_ts：用来区分「这轮的结果」和「上轮留下的残值」。
 --
--- 持久性：订阅更新不会抹掉这两个字段 —— dlink.lua:657 的 `if not vv._ignore`
+-- 持久性：订阅更新不会抹掉这两个字段 —— dlink.lua:666 的 `if not vv._ignore`
 -- 对已存在的节点直接跳过、不重写。
 
 -- 单引号包裹 + 内部单引号转义成 '\''。与 dlink.lua / ssping.lua 的 shell_quote 同一写法。

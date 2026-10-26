@@ -11,6 +11,10 @@ end
 local proto = arg[2]
 local local_port = arg[3] or "0"
 local socks_port = arg[4] or "0"
+
+-- 代理自身出站的 fwmark，必须与 ss-rules 里 SS_SPEC_WAN_AC 链首的豁免规则一致。
+-- 原理与取值说明见 genxrayconfig.lua 的 FW_MARK 注释（两处必须同步）。
+local FW_MARK = 0xff
 local ssrindext = io.popen("dbus get ssconf_basic_json_" .. server_section)
 local servertmp = ssrindext:read("*all")
 local server = cjson.decode(servertmp)
@@ -65,6 +69,9 @@ local v2ray = {
 		streamSettings = {
 			network = server.transport or "tcp",
 			security = (server.tls == '1') and "tls" or "none",
+			-- sockopt.mark：代理自身出站打 fwmark，绕开 ss-rules 的透明代理劫持链，
+			-- 避免自环（原理与取值见 genxrayconfig.lua 的 FW_MARK 注释，两处必须一致）。
+			sockopt = {mark = FW_MARK,},
 			tlsSettings = {allowInsecure = (server.insecure ~= "0") and true or false,serverName=server.tls_host,},
 		tcpSettings = (server.transport == "tcp") and {
 			header = {

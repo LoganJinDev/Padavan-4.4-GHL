@@ -122,6 +122,25 @@ ipset_r() {
 	for ip in $LAN_GM_IP; do ipset -! add gmlan $ip; done
 	$ipt_n -N SS_SPEC_WAN_AC
 	$ipt_n -I SS_SPEC_WAN_AC -p tcp ! --dport 53 -d $server -j RETURN
+	# ── 代理自身出站豁免（fwmark）────────────────────────────────────────────
+	# 为什么需要：上面那条 `-d $server` 的豁免，是 iptables 在【生成规则时】把节点
+	# 域名解析成【单个】A 记录并钉死的。节点域名有多个 A 记录（负载均衡 / CDN）时，
+	# DNS 轮询给出的是另一个 IP ⇒ 代理自己的出站撞上未被豁免的 IP ⇒ 被下面 FW 链
+	# 末尾的 REDIRECT 送回本地 1080 ⇒ 自环 ⇒ 整条代理链路失效。症状是：国内站点
+	# 正常（走 china 集合豁免）、被墙站点全超时、URL 测速全部失败。
+	# 做法：genxrayconfig.lua / genv2config.lua 给代理出站打 fwmark 0xff，这里在
+	# 链首最优先放行带该标记的包。标记与 IP 无关，天然免疫 DNS 漂移。
+	# 影响面：只有本机 OUTPUT 的包带此标记；PREROUTING 转发的 LAN 客户端包 mark=0，
+	# 行为完全不变。设备上没有任何 ip rule fwmark 路由，故该标记不影响路由查找。
+	# 注意：必须插在上面 $server 那条【之后】—— `-I` 不带序号是插到链首，后插者在
+	# 前，这样本条才落在第 1 位；后面 ipset_r() 末尾那两条 `-I SS_SPEC_WAN_AC 2`
+	# （blacklist / whitelist）用的是显式序号 2，也不会把它挤走。
+	modprobe xt_mark 2>/dev/null
+	$ipt_n -I SS_SPEC_WAN_AC -m mark --mark 0xff -j RETURN
+	# 本脚本没有 set -e，规则插入失败会静默继续（自环仍在，且毫无提示）—— 显式自检。
+	if ! $ipt_n -C SS_SPEC_WAN_AC -m mark --mark 0xff -j RETURN 2>/dev/null; then
+		loger 4 "fwmark 豁免规则插入失败：代理自身出站仍会被劫持（自环）"
+	fi
 	if [ "$RUNMODE" = "router" ] ;then
 	ipset -! -R <<-EOF || return 1
 		create ss_spec_wan_ac hash:net

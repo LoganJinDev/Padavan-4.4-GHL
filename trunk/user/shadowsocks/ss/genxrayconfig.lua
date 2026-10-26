@@ -37,6 +37,11 @@ local proto = arg[2]
 local local_port = arg[3] or "0"
 local socks_port = arg[4] or "0"
 
+-- 代理自身出站的 fwmark。必须与 ss-rules 里 SS_SPEC_WAN_AC 链首那条
+-- 「-m mark --mark 0xff -j RETURN」豁免规则的值一致，否则出站仍被劫持。
+-- 详细背景见 build_node_outbound 里 sockopt.mark 处的注释。
+local FW_MARK = 0xff
+
 -- FakeDNS 地址池：与 passwall2 保持一致
 local FAKE_IP_POOL = "198.18.0.0/15"
 
@@ -92,7 +97,7 @@ end
 --   而是把 TCP 拨号交给那个出站去完成 —— 即「本节点挂在前置节点后面」的链式代理，
 --   对应面板上「分流规则 / 访问控制」里的「前置代理」。
 --   xray 的字段是 streamSettings.sockopt.dialerProxy。
---   传 nil 时 sockopt 整段不生成（而不是生成空表），与加这个参数之前逐字节一致。
+--   传 nil 时该键不生成（sockopt 表本身仍会生成，因为还要放 mark，见下）。
 local function build_node_outbound(server, tag, dialer_proxy)
 	-- TLS / REALITY 两段先算好再塞进表里。直接写在表构造式里的话每段都是一串 and/or
 	-- 三元，把整个函数的圈复杂度顶到远超门禁（lizard 报 CCN 50+），拆出来既降复杂度也好读。
@@ -220,7 +225,20 @@ local function build_node_outbound(server, tag, dialer_proxy)
 			-- 建立到本出站服务器的 TCP 连接，再由本出站跑自己的协议握手。
 			-- 注意 tag 里不能出现反斜杠（本文件头部第 14-15 行：产物会被
 			-- sed -i 's/\\//g' 剥掉所有反斜杠，反斜杠会被无声吃掉导致 tag 对不上）。
-			sockopt = dialer_proxy and { dialerProxy = dialer_proxy } or nil,
+			-- sockopt.mark = FW_MARK：给本出站的 socket 打 fwmark，配合 ss-rules
+			-- 里 SS_SPEC_WAN_AC 链首的「-m mark --mark FW_MARK -j RETURN」豁免规则，
+			-- 让代理自身的出站流量绕开透明代理劫持链，避免自环。
+			--
+			-- 【为什么必须】ss-rules 里 `-d $server` 那条豁免，是 iptables 在
+			-- 【生成规则时】把节点域名解析成【单个】A 记录并钉死的。当节点域名有
+			-- 多个 A 记录（负载均衡 / CDN）而 DNS 轮询给出的是另一个 IP 时，代理
+			-- 自己的出站会撞上未被豁免的那个 IP ⇒ 被 REDIRECT 回本地 1080 ⇒ 自环
+			-- ⇒ 整条代理链路失效（表现为国内可通、被墙站点全超时、URL 测速全失败）。
+			-- fwmark 与 IP 无关，天然免疫 DNS 漂移。
+			--
+			-- 【为什么总是生成】mark 必须无条件存在，因此 dialer_proxy 为 nil 时
+			-- 也要生成 sockopt 表（仅含 mark），不再整体省略。
+			sockopt = { mark = FW_MARK, dialerProxy = dialer_proxy },
 		},
 		mux = {
 			enabled = (server.mux == "1") and true or false,
