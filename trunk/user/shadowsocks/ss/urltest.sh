@@ -84,8 +84,16 @@ dbus_set_status() {
 # 先整体读一次、再在 shell 里比对，而不是每个端口起一次 awk：find_free_ports 要
 # 连扫 200 个端口，每个都起一次 awk 的话光解释器启动就是秒级开销（MT7621 上
 # busybox awk 的成本实测教训）。
+#
+# ★ 必须用 printf 而不是 print：awk 的 print 是换行分隔，而 port_listening 用
+#   「空格分隔」的 case 模式匹配（见下），换行≠空格 ⇒ 只要设备上有两个以上监听
+#   端口（真机上永远有 5 个：dnsmasq/sshd/httpd/…），匹配就永远失败。后果不是
+#   「偶尔测不出」，而是 port_listening 恒假：run_one 的等待循环跑满 10 轮上界、
+#   probe_once 一次都不执行（实测 ps 全程看不到 curl、nat 计数器零增量），
+#   最终每个节点都记 failed；同时 find_free_ports 会把 200 个端口全判为空闲，
+#   端口占用检测一起失效。台架当时只有单个监听端口才漏过这个缺陷。
 refresh_listen_ports() {
-	LISTEN_PORTS=$(awk '$4 == "0A" { split($2, a, ":"); print a[2] }' /proc/net/tcp 2>/dev/null)
+	LISTEN_PORTS=$(awk '$4 == "0A" { split($2, a, ":"); printf "%s ", a[2] }' /proc/net/tcp 2>/dev/null)
 }
 
 port_listening() {
