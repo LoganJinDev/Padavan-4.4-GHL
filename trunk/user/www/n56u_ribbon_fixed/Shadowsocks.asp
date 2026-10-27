@@ -818,6 +818,14 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 												title: 'URL延迟',
 												cellStyle: urlTestCellStyle,
 												formatter: urlTestFormatter,
+												// 与 ping 列同款：sortable 让「URL延迟」表头可点击排序。
+												// 不加自定义 sorter，走 bootstrap-table 默认排序器 —— 两个值
+												// 都是数字时按数值比，其余回落到字符串比较。urltest 的取值
+												// 形态与 ping 完全一致（数字=毫秒 / "failed"=失败 / 缺字段=
+												// 没测过），所以排序行为与 ping 列逐字一致：
+												//   升序 = 没测过 → 最快 → 最慢 → failed
+												//   降序 = failed → 最慢 → 最快 → 没测过
+												sortable: true,
 												align: 'center',
 												valign: 'middle',
 												width: '60px'
