@@ -30,7 +30,8 @@ var ROWS = [];
 
 function initial(){
 	show_banner(2);
-	show_menu(5,13,4);
+	// ★ 方案2：科学上网合并为一条 9 项导航栏，本页由第 4 项移到第 8 项。
+	show_menu(5,13,8);
 	show_footer();
 	load_all();
 }

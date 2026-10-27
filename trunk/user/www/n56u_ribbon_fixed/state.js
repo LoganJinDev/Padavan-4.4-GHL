@@ -401,7 +401,17 @@ if (found_app_dnsforwarder()){
 	tabtitle[11] = new Array("", "<#menu5_1_1#>");
 }
 if (found_app_shadowsocks()){
-	tabtitle[12] = new Array("", "<#menu5_1_1#>","<#menu5_16_20#>","<#menu5_16_xray_route#>","<#menu5_16_xray_acl#>","<#menu5_16_xray_geo#>");
+	// ★ 方案2：本组由 5 项扩为 9 项 —— 把 Shadowsocks.asp 页内那条硬编码 tab 条
+	// （客户端/节点管理/高级设置/规则管理/运行日志/帮助文档）提升到这里，与
+	// 分流规则/访问控制/Geo查询 合并成【唯一一条】导航栏，消除原先两行 tab 的重复：
+	//   · 「一般设置」原指向 Shadowsocks.asp 本身，而该页正是渲染旧第一行的地方 ⇒ 内容重复；
+	//   · 「ss-watchcat日志」(Shadowsocks_log.asp) 与页内「运行日志」渲染的是同一个
+	//     /tmp/ssrplus.log ⇒ 内容逐字节相同。
+	// 前 6 项是 Shadowsocks.asp 的页内锚点：该页有 hash→div 调度（showTab/getHash），
+	// 从其它页面点 Shadowsocks.asp#cli 会整页加载并落到「规则管理」，跨页可达。
+	// ⚠ 顺序必须与 Shadowsocks.asp 的 arrHashes = ["cfg","add","ssl","cli","log","help"] 一致
+	//   —— 该页用它反推栏内高亮下标（ssTabIndex）。
+	tabtitle[12] = new Array("", "客户端","节点管理","高级设置","规则管理","运行日志","帮助文档","<#menu5_16_xray_route#>","<#menu5_16_xray_acl#>","<#menu5_16_xray_geo#>");
 }
 if (found_app_mentohust()){
 	tabtitle[13] = new Array("", "<#menu5_1_1#>","<#menu5_13_log#>");
@@ -444,7 +454,12 @@ if (found_app_dnsforwarder()){
 	tablink[11] = (dns_forwarder_array);
 }
 if (found_app_shadowsocks()){
-	shadowsocks_array = new Array("","Shadowsocks.asp","Shadowsocks_log.asp","Shadowsocks_Route.asp","Shadowsocks_ACL.asp","Shadowsocks_GeoView.asp");
+	// ★ 方案2：与上面的 tabtitle[12] 逐项对应（下标即栏内位置），9 项一条栏。
+	// 前 6 项带 hash ⇒ 已在本页时点它们只改 fragment，浏览器不重新加载
+	// （配合 Shadowsocks.asp 里新增的 hashchange 监听完成切 tab）。
+	// index 1 仍被 menuL2_link.push(shadowsocks_array[1]) 复用为左侧边栏
+	// 「科学上网」组的链接，带 #cfg 后从其它页进入仍正常落回本页客户端 tab。
+	shadowsocks_array = new Array("","Shadowsocks.asp#cfg","Shadowsocks.asp#add","Shadowsocks.asp#ssl","Shadowsocks.asp#cli","Shadowsocks.asp#log","Shadowsocks.asp#help","Shadowsocks_Route.asp","Shadowsocks_ACL.asp","Shadowsocks_GeoView.asp");
 	tablink[12] = (shadowsocks_array);
 }
 if (found_app_mentohust()){

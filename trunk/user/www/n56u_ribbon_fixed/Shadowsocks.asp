@@ -64,6 +64,14 @@
 					showTab(newHash);
 					return false;
 				});
+			// ★ 方案2：全局导航栏里本页那 6 项是 <a href="Shadowsocks.asp#xxx">。已经处在
+			// Shadowsocks.asp 时点它们只改 fragment，浏览器不重新加载页面 ⇒ 必须自己监听
+			// hashchange 切 tab 并同步栏内高亮（此前全站没有任何 hashchange 监听）。
+			// 从其它页面点进来仍是整页加载、由 initial() 处理，两条路径互不冲突。
+			$j(window).on('hashchange', function () {
+				showTab(getHash());
+				syncSSTabActive();
+			});
 			$j("#close_add").click(function () {
 				$j("#vpnc_settings").fadeOut(200);
 			});
@@ -154,9 +162,13 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			// show_menu(L1, L2, L3)：L1=主菜单下标，L2=二级菜单下标，L3=当前 tab 下标。
 			// tab 数组实际取 tabtitle[L2-1]，故 L2=13 对应 tabtitle[12]（科学上网 tab 组）。
 			// L3 是渲染开关而非“默认高亮”：L3 为 0/假值时整个 tab 条不渲染，
-			// 会导致 分流规则/访问控制/Geo查询 等子页面无入口，故必须传 1（本页=主要设置）。
+			// 会导致 分流规则/访问控制/Geo查询 等子页面无入口，故必须传 1..9。
 			// L1 原为 13，超出 menuL1_title 长度（有效 1..7），主菜单静默失去高亮，统一为 5。
-			show_menu(5, 13, 1);
+			// ★ 方案2：本页 6 个页内 tab 已提升为全局栏第 1..6 项，L3 改由当前 hash 反推
+			// （arrHashes 的顺序与栏内顺序一致）。原先硬编码 1 的后果：带 #cli 之类 hash
+			// 进入或刷新时，栏内高亮停在「客户端」而正文已经是别的 tab。
+			var ss_l3 = ssTabIndex();
+			show_menu(5, 13, ss_l3 > 0 ? ss_l3 : 1);
 			show_footer();
 			fill_ss_status(shadowsocks_status());
 			fill_dns2tcp_status(dns2tcp_status());
@@ -477,6 +489,44 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 					return curHash;
 			}
 			return ('#' + arrHashes[0]);
+		}
+		// ★ 方案2：当前 hash 对应到全局导航栏里本页那一项的下标（1..6）；不在表内返回 0。
+		// 循环写法与 getHash() 保持一致，arrHashes 的顺序即栏内顺序
+		// （客户端/节点管理/高级设置/规则管理/运行日志/帮助文档）。
+		function ssTabIndex() {
+			var curHash = getHash();
+			for (var i = 0; i < arrHashes.length; i++) {
+				if (curHash == ('#' + arrHashes[i]))
+					return i + 1;
+			}
+			return 0;
+		}
+		// ★ 方案2：把全局导航栏的 active 与 href 一起对齐到当前 hash。
+		// show_menu() 只在页面加载时渲染一次栏（写 #tabMenu 的 innerHTML），hash 变化时
+		// 不会重建 ⇒ 必须自己对齐；showTab() 只管页内那 6 个（现已隐藏的）tab 的高亮。
+		// ⚠ 必须连 href 一起还原，不能只挪 class：show_menu() 渲染时把「当前项」的 href
+		//   改写成 javascript: void(0)（state.js 里 L3 == i 的分支；L2=13 不命中 L2==9
+		//   的例外）⇒ 只挪 class 的话，切走之后原来那一项仍是死链、点不回去。
+		// ⚠ 也不能靠「再调一次 show_menu()」来省事：它不是幂等的 —— 内部对
+		//   tabtitle[]/tablink[]/menuL2_link[] 做 splice() 原地改写（36 处），
+		//   第二次调用会把整个菜单数组改坏。所以这里按 tablink[12][n]（即
+		//   shadowsocks_array，state.js:386 的顶层全局）逐项写回真实地址，
+		//   与 show_menu() 的输出保持同构：全部真实链接 + 当前项 void(0)。
+		// 用 eq(idx-1) 而非 eq(idx)：栏内 <li> 是 0 基而下标是 1 基；
+		// idx 越界时回落到 1（客户端），不用 eq(-1) —— 那会选中最后一个元素。
+		function syncSSTabActive() {
+			var idx = ssTabIndex();
+			if (idx <= 0)
+				idx = 1;
+			$j('#tabMenu li').removeClass('active');
+			for (var i = 1; i <= arrHashes.length; i++) {
+				var li = $j('#tabMenu li').eq(i - 1);
+				if (!li.length)
+					continue;
+				if (i == idx)
+					li.addClass('active');
+				li.children('a').attr('href', (i == idx) ? 'javascript: void(0)' : tablink[12][i]);
+			}
 		}
 		function markGroupRULES(o, c, b) {
 			document.form.group_id.value = "SspList";
@@ -2056,7 +2106,13 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 									<h2 class="box_head round_top"><#menu5_16#> - ShadowSocksR Plus+</h2>
 									<div class="round_bottom">
 										<div>
-											<ul class="nav nav-tabs" style="margin-bottom: 10px;">
+											<!-- ★ 方案2：这六个页内 tab 已提升为全局导航栏（state.js 的 tabtitle[12]/shadowsocks_array）
+											     的第 1..6 项，此处整条隐藏，避免出现两行内容重复的 tab。
+											     ⚠ 只隐藏、不删除：showTab() 用 $('tab_ss_'+hash) 判断「该 tab 是否存在且可见」
+											     （obj == null || obj.style.display == 'none' 时静默回退 #cfg），getHash() 也用它校验；
+											     删掉这些 <a> 会让所有 hash 都回退到 #cfg，导航整条失效。
+											     隐藏写在父级 <ul> 上：各 <a> 自身的 inline style.display 仍是空串 ⇒ 上面的守卫照常通过。 -->
+											<ul id="ss_tab_anchors" class="nav nav-tabs" style="margin-bottom: 10px; display: none;">
 												<li class="active"><a id="tab_ss_cfg" href="#cfg">客户端</a></li>
 												<li><a id="tab_ss_add" href="#add">节点管理</a></li>
 												<li><a id="tab_ss_ssl" href="#ssl">高级设置</a></li>

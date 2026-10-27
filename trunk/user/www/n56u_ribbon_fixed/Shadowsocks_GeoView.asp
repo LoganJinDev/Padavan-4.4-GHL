@@ -27,7 +27,8 @@ var $j = jQuery.noConflict();
 
 function initial(){
 	show_banner(2);
-	show_menu(5,13,5);
+	// ★ 方案2：科学上网合并为一条 9 项导航栏，本页由第 5 项移到第 9 项。
+	show_menu(5,13,9);
 	show_footer();
 }
 

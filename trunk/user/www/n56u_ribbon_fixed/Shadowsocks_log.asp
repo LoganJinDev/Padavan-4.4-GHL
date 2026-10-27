@@ -31,7 +31,12 @@ $j(document).ready(function(){
 
 function initial(){
 	show_banner(2);
-	show_menu(5,13,2);
+	// ★ 方案2：本页已从科学上网导航栏移除 —— 它的 textarea 渲染的是
+	// nvram_dump("ssrplus.log","")，与 Shadowsocks.asp 页内「运行日志」(#log) 逐字节相同，
+	// 属纯重复项；栏内「运行日志」现指向 Shadowsocks.asp#log。
+	// 保留本文件（仍可直接按 URL 访问，避免留下 404），但 L3 传 0 让导航栏不渲染：
+	// 栏里已无本页对应项，若仍传 2 会把「节点管理」错高亮成当前项。左侧 subMenu 照常渲染，可作返回入口。
+	show_menu(5,13,0);
 	show_footer();
 }
 </script>
