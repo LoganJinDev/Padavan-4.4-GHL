@@ -22,6 +22,13 @@
 	       键都会落进 window.db_ss，而本页对 db_ss 每个键无保护地 JSON.parse
 	       ⇒ 节点下拉框多一个垃圾项、主表多一行垃圾。 -->
 	<script type="text/javascript" src="/dbconf?p=urltest&v=<% uptime(); %>"></script>
+	<!-- 路由器侧网络检测（出口 IP / 站点延迟）的结果也要【同步】取一次，理由同上。
+	     ★ 前缀 netchk_ 不属于任何既有前缀。若复用 ss 前缀，这些键会落进 window.db_ss，
+	       而本页对 db_ss 每个键无保护地 JSON.parse ⇒ 节点下拉框多垃圾项、主表多垃圾行。
+	     ★ 本标签在页面 JS 之前加载，所以拿到的是【上一次】检测的结果；
+	       首次进入本页时这些键还不存在，db_netchk 为空对象。netchk_init() 会先
+	       把两个 IP 字段渲染成「检测中…」，等 netcheck_ip() 触发的那一轮跑完再轮询回填。 -->
+	<script type="text/javascript" src="/dbconf?p=netchk&v=<% uptime(); %>"></script>
 	<script type="text/javascript" src="/bootstrap/js/bootstrap.min.js"></script>
 	<script type="text/javascript" src="/bootstrap/js/bootstrap-table.min.js"></script>
 	<script type="text/javascript" src="/bootstrap/js/bootstrap-table-zh-CN.min.js"></script>
@@ -39,6 +46,7 @@
 		<% dns2tcp_status(); %>
 		<% dnsproxy_status(); %>
 		<% rules_count(); %>
+		<% netcheck_ip(); %>
 		node_global_max = 0;
 		editing_ss_id = 0;
 		var $j = jQuery.noConflict();
@@ -171,6 +179,10 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			show_menu(5, 13, ss_l3 > 0 ? ss_l3 : 1);
 			show_footer();
 			fill_ss_status(shadowsocks_status());
+			// 路由器侧检测（出口 IP / 站点延迟）：按缓存渲染 + 起轮询。
+			// ★ 必须在 showTab() 之前也无妨：这两个字段所在的 tab 即使处于隐藏态，
+			//   元素仍在 DOM 里（showTab 只切 display，不建元素）⇒ 可以直接写入。
+			netchk_init();
 			fill_dns2tcp_status(dns2tcp_status());
 			fill_dnsproxy_status(dnsproxy_status());
 			var wan0_dns = '<% nvram_get_x("","wan0_dns"); %>';
@@ -444,9 +456,18 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			else if (status_code == 1)
 				stext = "<#Running#>";
 			$("ss_status").innerHTML = '<span class="label label-' + (status_code != 0 ? 'success' : 'warning') + '">' + stext + '</span>';
-			$("domestic_ip").innerHTML = '<iframe src="http://ip.3322.net" height="30" scrolling="no" frameborder="0" marginheight="0" marginwidth="0"></iframe>';
-			$("foreign_ip").innerHTML = '<iframe src="https://ifconfig.me/ip" height="30" scrolling="no" frameborder="0" marginheight="0" marginwidth="0"></iframe>';
-			$("gg_status").innerHTML = '<span><img alt="无法访问" src="https://www.google.com/favicon.ico?' + new Date().getTime() + '" /></span>';
+			// ★ 这里原先有三行【浏览器侧】检测，全部已移除：
+			//   1) domestic_ip / foreign_ip 两个 <iframe>：iframe 是浏览器发的请求，
+			//      走的是浏览器自己的默认路由。本机（Mac en0）默认路由指向上游
+			//      192.168.66.1，根本不经过本路由器 ⇒ 两个字段显示的都是【上游路由器】
+			//      的出口 IP（实测 43.155.31.216），而本机代理的真实出口是 45.149.92.22。
+			//      改成路由器侧 curl 之后语义才成立：路由器 curl 国内主机命中
+			//      ss-rules 的 chnroute RETURN ⇒ 直连出口；curl 国外主机被 OUTPUT 链
+			//      REDIRECT 进透明代理 ⇒ 代理出口。副产品：两个值若相同，
+			//      说明代理或分流规则没生效 —— 这是 iframe 永远给不出的判据。
+			//   2) gg_status 的 google favicon：同样是浏览器侧，且已并入新的
+			//      「站点访问延迟」行里的「谷歌」一项。
+			//     ⇒ 三者的渲染统一交给 netchk_render_ip() / netchk_render_lat()。
 		}
 		function fill_dns2tcp_status(status_code) {
 			var stext = "Unknown";
@@ -1436,6 +1457,218 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				$j('#table99').bootstrapTable('refresh');
 		}
 
+		// ─────────────────────────────────────────────────────────────────────
+		// 路由器侧网络检测：出口 IP（国内/国外） + 站点访问延迟（百度/谷歌/GitHub/自定义）
+		//
+		// 数据通道：netcheck.sh 把结果写进 dbus 的 netchk_* 键 ⇒ 页面用
+		//   /dbconf?p=netchk 读（响应体是 `var db_netchk=(function(){...})();`）。
+		//   head 里那个同步 <script src> 先取一次，之后轮询时用 dataType:'script'
+		//   重新求值覆盖 window.db_netchk。
+		//
+		// ★ 为什么必须轮询、不能计时：POST 一发出，httpd 的 doSystem 只等
+		//   netcheck.sh 那【一个】shell 退出（脚本内部用 ( worker ) & 立刻脱离）
+		//   ⇒ success 回调是毫秒级触发的，用 ctime()/dtime() 量出来的不是检测耗时。
+		//   唯一可靠的完成信号是 netchk_ip_run / netchk_lat_run 由 1 变 0。
+		// ─────────────────────────────────────────────────────────────────────
+		var NETCHK_SITES = [
+			{ key: "baidu",  name: "百度" },
+			{ key: "google", name: "谷歌" },
+			{ key: "github", name: "GitHub" },
+			{ key: "custom", name: "自定义" }
+		];
+
+		// 安全读 dbus 值。
+		// ★ typeof 守卫不能省：web_ex.c 的 db_print 把值原样塞进 JS 单引号串
+		//   （o["k"]='v';），值里出现一个单引号就会让整段 `var db_netchk=...` 语法错
+		//   ⇒ window.db_netchk 未定义。此时本页其余 script 标签不受影响，
+		//   这里退化成空值即可（净效果是「显示未检测」，不是破页）。
+		function netchk_get(k) {
+			if (typeof (window.db_netchk) == "undefined" || window.db_netchk == null) return "";
+			var v = window.db_netchk["netchk_" + k];
+			return (typeof (v) == "undefined" || v == null) ? "" : String(v);
+		}
+
+		// 延迟值格式化：数字=成功(绿) / failed=失败(红) / nourl=自定义未设置(红) / 空=未测(灰)
+		// ★ 与下面的 IP 格式化必须分开：一个数字型的正则去判 IP 会把 "45.149.92.22"
+		//   也判成成功（它确实匹配 ^[0-9.]+$），而判 IP 的正则又判不了 "129.82"。
+		function netchk_lat_fmt(v) {
+			if (v === "") return { t: "点我检测", c: "netchk_wait" };
+			if (v === "failed") return { t: "检测失败", c: "netchk_bad" };
+			if (v === "nourl") return { t: "未设置", c: "netchk_bad" };
+			if (/^[0-9]+(\.[0-9]+)?$/.test(v)) return { t: v + " ms", c: "netchk_ok" };
+			return { t: v, c: "netchk_bad" };
+		}
+
+		// IP 值格式化：IPv4 字面量=成功(绿) / failed=失败(红) / 空=检测中(灰)
+		function netchk_ip_fmt(v) {
+			if (v === "") return { t: "检测中…", c: "netchk_wait" };
+			if (v === "failed") return { t: "检测失败", c: "netchk_bad" };
+			if (/^[0-9]{1,3}(\.[0-9]{1,3}){3}$/.test(v)) return { t: v, c: "netchk_ok" };
+			return { t: v, c: "netchk_bad" };
+		}
+
+		function netchk_render_ip() {
+			var d = netchk_ip_fmt(netchk_get("ip_domestic"));
+			var f = netchk_ip_fmt(netchk_get("ip_foreign"));
+			$("domestic_ip").innerHTML = '<span class="netchk_ipclick ' + d.c + '" title="点击重新检测" onclick="netchk_ip_run();">' + d.t + '</span>';
+			$("foreign_ip").innerHTML = '<span class="netchk_ipclick ' + f.c + '" title="点击重新检测" onclick="netchk_ip_run();">' + f.t + '</span>';
+		}
+
+		function netchk_render_lat() {
+			var h = '<div class="netchk_grid">';
+			for (var i = 0; i < NETCHK_SITES.length; ++i) {
+				var s = NETCHK_SITES[i];
+				var r = netchk_lat_fmt(netchk_get("lat_" + s.key));
+				h += '<div class="netchk_item" onclick="netchk_lat_run(\'' + s.key + '\');" title="点击重新检测（四项一起测）">'
+					+ '<span class="netchk_name">' + s.name + '</span>'
+					+ '<span class="netchk_val ' + r.c + '">' + r.t + '</span></div>';
+			}
+			$("netchk_lat_box").innerHTML = h + '</div>';
+		}
+
+		// 自定义站点的输入框回填（值存在 dbus 的 netchk_custom_url）
+		function netchk_custom_fill() {
+			var el = document.getElementById("netchk_custom_url");
+			if (el) el.value = netchk_get("custom_url");
+		}
+
+		// 轮询 dbus 的 netchk_<kind>_run，直到 != 1 或到上限；每轮都重渲染一次。
+		// kind = "ip" | "lat"，两者各有一套 run 标志，互不干扰。
+		// ★ 上限不能省：设备若在 worker 跑到一半时重启，run 会永久停在 1，
+		//   没有上限界面就永远卡在「检测中…」。30×1s 对 20s 的最坏耗时留了余量。
+		// ★ 只读 /dbconf?p=netchk（键很少）。绝不能带 ss：那会把几十个节点的
+		//   JSON 每 1 秒重解析一遍。
+		function netchk_poll(kind, n) {
+			var left = (typeof (n) === "undefined") ? 0 : n;
+			$j.ajax({
+				url: "/dbconf?p=netchk&_=" + (new Date()).getTime(),
+				type: 'get',
+				dataType: 'script',
+				cache: false,
+				success: function () {
+					// 先渲染：此刻 db_netchk 已被本次响应重新求值，就是最新值。
+					if (kind === "ip") { netchk_render_ip(); } else { netchk_render_lat(); }
+					if (netchk_get(kind + "_run") === "1" && left < 30) {
+						setTimeout(function () { netchk_poll(kind, left + 1); }, 1000);
+					}
+				},
+				error: function () {
+					// 读失败不该把界面永久卡在「检测中…」，但也不能无限重试
+					if (left < 30) {
+						setTimeout(function () { netchk_poll(kind, left + 1); }, 1000);
+					}
+				}
+			});
+		}
+
+		// 触发一次 IP 检测（国内 + 国外，netcheck.sh 内部两路并行）。
+		// ★ POST 的【值】"ipcheck" 决定 web_ex.c 的 applydb_store 走哪个分支
+		//   ⇒ doSystem("/etc_ro/ss/netcheck.sh ip")。query 里的参数对 POST 是
+		//   装饰性的（httpd.c 的 strsep 在 handler 之前就把 query 切掉了）。
+		// ★ 不写任何 dbus 键：dbval 命中的是那条 else if 分支，走不到最后的
+		//   else → dbclient_bulk ⇒ 不会多出一个垃圾键。
+		function netchk_ip_run() {
+			// 先把两个字段标成「检测中…」：db_netchk 里还是旧值，等轮询换掉。
+			// ★ 不能靠清空 db_netchk 达到这个效果 —— 那会把延迟行的值一起抹掉。
+			$("domestic_ip").innerHTML = '<span class="netchk_ipclick netchk_wait">检测中…</span>';
+			$("foreign_ip").innerHTML = '<span class="netchk_ipclick netchk_wait">检测中…</span>';
+			$j.ajax({
+				url: "/applydb.cgi?p=netchk",
+				type: 'POST',
+				contentType: "application/x-www-form-urlencoded",
+				dataType: 'text',
+				data: "netchk_ip=ipcheck",
+				error: function () {
+					alert("检测请求发送失败！");
+					netchk_render_ip();
+				},
+				success: function () { netchk_poll("ip", 0); }
+			});
+		}
+
+		// 真正发延迟检测请求。
+		// ★ 一次点击测【四项】：netcheck.sh 的 lat 模式是整体跑一轮，四个站点串行。
+		//   为什么不按点击项只测一个：那要求把站点名从浏览器传进脚本，而脚本参数
+		//   只能来自 web_ex.c 里硬编码的字面量（任何外部输入进 shell 都是注入面）。
+		//   四项一起测反而更好 —— 同一轮里的数字才是可横向比较的。
+		function netchk_lat_fire() {
+			var h = '<div class="netchk_grid">';
+			for (var i = 0; i < NETCHK_SITES.length; ++i) {
+				var s = NETCHK_SITES[i];
+				h += '<div class="netchk_item"><span class="netchk_name">' + s.name
+					+ '</span><span class="netchk_val netchk_wait">检测中…</span></div>';
+			}
+			$("netchk_lat_box").innerHTML = h + '</div>';
+			$j.ajax({
+				url: "/applydb.cgi?p=netchk",
+				type: 'POST',
+				contentType: "application/x-www-form-urlencoded",
+				dataType: 'text',
+				data: "netchk_lat=latency",
+				error: function () {
+					alert("检测请求发送失败！");
+					netchk_render_lat();
+				},
+				success: function () { netchk_poll("lat", 0); }
+			});
+		}
+
+		function netchk_lat_run(key) {
+			if (key === "custom" && netchk_get("custom_url") === "") {
+				alert("请先填写自定义站点地址并点「保存」。");
+				return;
+			}
+			netchk_lat_fire();
+		}
+
+		// 保存自定义站点地址到 dbus 的 netchk_custom_url，然后立刻测一次。
+		// ★ 形态守卫必须与 netcheck.sh 的 netchk_url_ok() 【同构】（同一套白名单字符集），
+		//   否则会出现「前端放行、脚本判非法并清空」的静默回退 —— 用户看不懂值为什么没了。
+		// ★ data 用【已编码的字符串】而不是 data:{obj}：jQuery 的 $.param 自己会对值
+		//   做 encodeURIComponent，再手工编一次就成了双重编码（服务端会存下
+		//   http%3A%2F%2F...）。字符串形式的 data 被原样发出，编码轮次由这里唯一决定。
+		//   而 applydb_store 是【先按 & 切分、再对每段 unescape】⇒ 值里的 & 必须先编成 %26。
+		function netchk_custom_save() {
+			var el = document.getElementById("netchk_custom_url");
+			if (!el) return;
+			var v = el.value.replace(/^\s+|\s+$/g, "");
+			if (v !== "" && !/^https?:\/\/[A-Za-z0-9:\/?&=._%~+@-]+$/i.test(v)) {
+				alert("自定义站点地址不合法：必须以 http:// 或 https:// 开头，且不能包含空格、引号等字符。");
+				return;
+			}
+			el.value = v;
+			$j.ajax({
+				url: "/applydb.cgi?p=netchk",
+				type: 'POST',
+				contentType: "application/x-www-form-urlencoded",
+				processData: false,
+				dataType: 'text',
+				data: "netchk_custom_url=" + encodeURIComponent(v),
+				error: function () { alert("自定义站点地址保存失败！"); },
+				success: function () {
+					// 本地缓存同步：同一次会话里再点「自定义」时才不会拿旧值去判空
+					if (typeof (window.db_netchk) == "undefined" || !db_netchk) window.db_netchk = {};
+					db_netchk.netchk_custom_url = v;
+					if (v === "") { netchk_render_lat(); } else { netchk_lat_fire(); }
+				}
+			});
+		}
+
+		// 页面初始化：回填输入框、按缓存渲染、起轮询。
+		// ★ 两个 poll 都【无条件】发一次，不能先判 run 再决定：
+		//   head 里那个同步 <script src="/dbconf?p=netchk"> 是在 <% netcheck_ip(); %>
+		//   钩子【之前】执行的（文档顺序）⇒ db_netchk 里带的 run 是上一轮的值，
+		//   很可能是 0，而钩子刚触发的新一轮已经把 dbus 里的 run 置成 1 了。
+		//   照缓存的 0 去判就会「不轮询」⇒ 界面停在旧 IP 上再也不更新。
+		//   无条件发一次，轮询自己会读到真值：run==1 就继续，run==0 就渲染完即止。
+		function netchk_init() {
+			netchk_custom_fill();
+			netchk_render_ip();
+			netchk_render_lat();
+			netchk_poll("ip", 0);
+			netchk_poll("lat", 0);
+		}
+
 		function paramsMatter(value, row, index) {
 			var span = document.createElement("span");
 			span.setAttribute("title", value);
@@ -2051,6 +2284,47 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			box-shadow: 3px 3px 10px #000;
 			display: none;
 		}
+		/* ── 路由器侧网络检测（出口 IP / 站点延迟）─────────────────────────
+		   配色直接取自上游 passwall2 首页那个延迟组件（绿 rgb(45,206,137) /
+		   红 rgb(251,99,64)），这样两个路由器的观感一致。
+		   ★ 全部加 netchk_ 前缀，避免与 bootstrap / 本页既有类名撞车。 */
+		.netchk_grid {
+			display: flex;
+		}
+		.netchk_item {
+			flex: 1 1 0;
+			text-align: center;
+			cursor: pointer;
+			padding: 2px 0;
+		}
+		.netchk_name {
+			display: block;
+			font-size: 0.9rem;
+			color: #666;
+		}
+		.netchk_val {
+			display: block;
+		}
+		.netchk_ok {
+			font-size: 0.9rem;
+			color: rgb(45,206,137);
+		}
+		.netchk_bad {
+			font-size: 0.9rem;
+			color: rgb(251,99,64);
+		}
+		.netchk_wait {
+			font-size: 0.9rem;
+			color: #999;
+		}
+		.netchk_ipclick {
+			cursor: pointer;
+		}
+		/* 自定义站点那一行：输入框吃掉剩余宽度，按钮不换行 */
+		.netchk_custom_in {
+			width: 60%;
+			margin-right: 4px;
+		}
 	</style>
 </head>
 
@@ -2163,8 +2437,27 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 														<td id="dnsproxy_status"></td>
 													</tr>
 													<tr>
-														<th width="50%">Google 访问状态：</th>
-														<td id="gg_status"></td>
+														<th width="50%">站点访问延迟：</th>
+														<td>
+															<!-- 内容由 netchk_render_lat() 填充（body onload → netchk_init）。
+															     ★ 里面预置一个可点的「点我检测」兜底：万一 JS 报错导致 netchk_init
+															       没跑，这一行也不会是空白不可用。
+															     ★ 点任意一项都会测【四项】：netcheck.sh 的 lat 模式是整体跑一轮。
+															       站点名不能从浏览器传进脚本 —— 脚本参数只允许来自 web_ex.c 里硬编码
+															       的字面量，任何外部输入进 shell 都是注入面。 -->
+															<div id="netchk_lat_box"><span class="netchk_wait netchk_ipclick" onclick="netchk_lat_run('');">点我检测</span></div>
+														</td>
+													</tr>
+													<tr>
+														<th width="50%">自定义站点：</th>
+														<td>
+															<!-- ★ 故意不给 name 属性：本页「应用本页面设置」会整表提交到 apply.cgi，
+															     而自定义站点走自己的 applydb.cgi 通道，不该被顺带提交（variables.c 的
+															     validate_cgi 只遍历已注册变量，即便给了 name 也写不进 nvram，但少一个面
+															     更干净）。 -->
+															<input type="text" id="netchk_custom_url" class="netchk_custom_in" placeholder="http://example.com" onkeydown="if (event.keyCode == 13) { netchk_custom_save(); return false; }">
+															<input type="button" class="btn btn-info" value="保存并检测" onclick="netchk_custom_save();">
+														</td>
 													</tr>
 													<tr>
 														<th width="50%">国内IP：</th>

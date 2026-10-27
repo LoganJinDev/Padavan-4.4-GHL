@@ -2049,6 +2049,34 @@ static int shadowsocks_action_hook(int eid, webs_t wp, int argc, char **argv)
  * 正文来源见调用处：GET 在 post_buf_backup 里（首字符是占位 '?'，要跳过），
  * POST 已经在 post_json_buf 里。两者都在 do_html_post_and_get 开头清零，
  * 不会跨请求残留 */
+
+/* 路由器侧网络检测（出口 IP / 站点延迟）的派发。
+ *
+ * 单独成函数，而不是往 applydb_store 的动词链里再加两个 else if：
+ * 那条链是扁平的「POST 值 → 硬编码脚本」路由表，每加一个前端动作 CCN +1，
+ * 而它改动前就已经是 15（正好等于质量闸门的阈值），零余量 —— 任何新功能
+ * 都会把它推过线。把动词判断挪到这里，链上只多一个 if，以后再动作也只改本函数。
+ *
+ * ★ 传给 doSystem 的只有 ip / lat 两个字面量，dbval 本身【绝不】进 shell：
+ *   dbval 是 POST 的值，属外部输入，拼进命令行就是注入面。
+ * ★ 脚本内部用 ( worker ) & 立刻脱离后 exit 0 ⇒ 这里的 doSystem 只等这一个
+ *   shell 退出（毫秒级），不会堵住单进程 httpd 的 select 循环。
+ *
+ * 返回 1 = 已处理（调用方 continue 处理下一个键），0 = 不归本函数管。 */
+static int
+netcheck_dispatch(const char *dbval)
+{
+	if (strcmp(dbval, "ipcheck") == 0) {
+		doSystem("/etc_ro/ss/netcheck.sh %s", "ip");
+		return 1;
+	}
+	if (strcmp(dbval, "latency") == 0) {
+		doSystem("/etc_ro/ss/netcheck.sh %s", "lat");
+		return 1;
+	}
+	return 0;
+}
+
 static void
 applydb_store(dbclient *client, const char *name, char *body)
 {
@@ -2103,6 +2131,12 @@ applydb_store(dbclient *client, const char *name, char *body)
 		/* 到这一步才解码，确保值里的 %26 不会先被上面的 strtok 撕开 */
 		unescape(dbvar);
 		unescape(dbval);
+
+		/* 路由器侧网络检测：不走下面那条动词链，单独派发。
+		 * 单独走是为了让那条链不再增长，理由见 netcheck_dispatch 的注释。 */
+		if (netcheck_dispatch(dbval)) {
+			continue;
+		}
 
 		if (strcmp(dbval, userm) == 0) {
 			doSystem("dbus remove %s", dbvar);
@@ -2291,8 +2325,31 @@ static int rules_count_hook(int eid, webs_t wp, int argc, char **argv)
 	}
 	if (strlen(count) > 0)
 		count[strlen(count) - 1] = 0;
-	websWrite(wp, "function gfwlist_count() { return '%s';}\n", count);	
+	websWrite(wp, "function gfwlist_count() { return '%s';}\n", count);
 #endif
+	return 0;
+}
+
+/* 路由器侧出口 IP 检测的触发钩子 —— 页面渲染时跑一次（ASP 里写 <% netcheck_ip(); %>）。
+ *
+ * ★ 为什么用 hook 触发，而【不】复用 applydb.cgi：
+ *   applydb_cgi 结尾无条件调 doSystem("/sbin/mtd_storage.sh save")，而检测结果写的是
+ *   dbus（落在 /etc/storage/db/0.udbData，即 storage tar 内部）⇒ 整份 storage 的
+ *   md5 变了 ⇒ 每打开一次本页就要 bzip2 压 ~0.5 MB 并写一次 flash。
+ *   用 hook 触发则结果只进内存，等下一次真正的保存动作顺带落盘，零额外擦写。
+ *   （mtd_storage.sh 的 func_save 有 md5 短路，但它挡的是「内容没变」，挡不住
+ *     「内容变了但只是缓存数据」这一类。）
+ *
+ * ★ 不阻塞渲染：netcheck.sh 内部 ( worker ) & 立刻脱离后 exit 0，
+ *   doSystem 只等这一个 shell 的退出，实测毫秒级。前端拿到值靠轮询
+ *   /dbconf?p=netchk 的 netchk_ip_run，不用这里的返回值计时。
+ *
+ * ★ 参数是硬编码字面量，没有任何外部输入进 shell。 */
+static int netcheck_ip_hook(int eid, webs_t wp, int argc, char **argv)
+{
+	doSystem("/etc_ro/ss/netcheck.sh %s", "ip");
+	/* 留一个惰性标记，供真机验收直接 grep 渲染出来的 HTML，证明钩子真的被调用过 */
+	websWrite(wp, "function netcheck_ip_triggered() { return 1; }\n");
 	return 0;
 }
 
@@ -4620,6 +4677,7 @@ struct ej_handler ej_handlers[] =
 	{ "shadowsocks_action", shadowsocks_action_hook},
 	{ "shadowsocks_status", shadowsocks_status_hook},
 	{ "rules_count", rules_count_hook},
+	{ "netcheck_ip", netcheck_ip_hook},
 	{ "pdnsd_status", pdnsd_status_hook},
 	{ "dns2tcp_status", dns2tcp_status_hook},
 	{ "dnsproxy_status", dnsproxy_status_hook},
