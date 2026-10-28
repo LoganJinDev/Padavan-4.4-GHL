@@ -85,15 +85,25 @@ on:
         type: choice
         options: [ '0x312', '0x362', '0x372', '0x3B2' ]
       plugins:
-        description: 'Plugin JSON, e.g. {"shadowsocks":"y","xray":"n"}'
+        description: 'Plugin JSON。键=插件名（小写），值=y 安装 / n 不装。默认=GHL 全量 39 项'
         required: true
         type: string
-        default: '{"shadowsocks":"y","v2ray":"n","xray":"y","trojan":"y","ssobfs":"y","smartdns":"y","vlmcsd":"y","ttyd":"n","iperf3":"n"}'
+        default: '{"sfe":"y","antfs":"y","qos":"y","ifb":"y","ipset":"y","lang_cn":"y","tcpdump":"y","hdparm":"y","parted":"y","ftpd":"y","eap_peap":"y","sftp":"y","openssh":"y","openvpn":"y","openssl_ec":"y","xupnpd":"y","aria":"y","aria_web_control":"y","curl":"y","ttyd":"y","msd_lite":"y","lrzsz":"y","htop":"y","nano":"y","mtr":"y","socat":"y","frpc":"y","frps":"y","shadowsocks":"y","xray":"y","trojan":"y","3proxy":"y","microsocks":"y","sssserver":"y","zerotier":"y","aliddns":"y","ddnsto":"y","sqm":"y","wireguard":"y"}'
       customization:
         description: 'Customization JSON'
         required: true
         type: string
-        default: '{"lanip":"192.168.2.1","signaccount":"admin","signpassword":"admin","wifi2gssid":"Padavan","wifi2gpsk":"1234567890","wifi5gssid":"Padavan-5G","wifi5gpsk":"1234567890"}'
+        # ★ lanip 留空 = 沿用板型默认值：GHL=192.168.9.1、MI-R3G=192.168.32.1、
+        #   MI-R3P=192.168.31.1（定义在各板 configs/boards/<PID>/board.h）。
+        #   留空时 setip.sh 只回填 CN.dict 的提示文案，一个 #define 都不动。
+        #   填了地址则 defaults.h 与 board.h 一起按宏名改写（board.h 的 #ifndef 会盖住 defaults.h）。
+        #   其余 53 个板型没在 board.h 里定义 DEF_LAN_ADDR，留空即走上游默认 192.168.2.1，行为不变。
+        #   ★ 全部留空 = 各板沿用出厂默认值，一个 #define 都不动：
+        #     GHL=GHL/GHL_5G（board.h）、MI-R3G/MI-R3P=BOARD_PID "_%s"（defaults.h）、
+        #     其余板型同上。要自定义就填，填了在 defaults.h 与 board.h 两处一起生效。
+        #     （旧默认值 wifi2gssid="Padavan" 是空头支票：setwifi.sh 的绝对行号 sed
+        #       自 303108e3c 起就是死操作，该值从未生效过。）
+        default: '{"lanip":"","signaccount":"","signpassword":"","wifi2gssid":"","wifi2gpsk":"","wifi5gssid":"","wifi5gpsk":""}'
       nanoversion:
         description: "Build Nano Version"
         type: boolean
@@ -175,9 +185,23 @@ jobs:
       - name: Apply Configurations
         run: |
           chmod +x trunk/custom/scripts/*.sh || true
-          bash trunk/custom/scripts/setip.sh "$LANIP" trunk/user/shared/src/defaults.h trunk/user/www/dict/CN.dict
-          bash trunk/custom/scripts/setaccount.sh "$SIGNACCOUNT" "$SIGNPASSWORD" trunk/user/shared/src/defaults.h
-          bash trunk/custom/scripts/setwifi.sh "$WIFI2GSSID" "$WIFI2GPSK" "$WIFI5GSSID" "$WIFI5GPSK" trunk/user/shared/src/defaults.h
+
+          # 板型 ID 必须从模板里读，不能从 inputs.target 推 —— 两者未必同名：
+          # K2P-NANO.config 里是 CONFIG_FIRMWARE_PRODUCT_ID="K2P"，而 board.h /
+          # kernel-4.4.x.config / DTS 全部按 PRODUCT_ID 定位目录（boards/K2P-NANO 并不存在）。
+          PRODUCT_ID=$(sed -n 's/^CONFIG_FIRMWARE_PRODUCT_ID="\(.*\)"$/\1/p' "$CONFIGFILE" | head -n 1)
+          if [ -z "$PRODUCT_ID" ]; then
+            echo "❌ $CONFIGFILE 里读不到 CONFIG_FIRMWARE_PRODUCT_ID，无法定位板型目录"
+            exit 1
+          fi
+          BOARD_H="trunk/configs/boards/${PRODUCT_ID}/board.h"
+          echo "PRODUCT_ID=${PRODUCT_ID}" >> $GITHUB_ENV
+          echo "板型: PRODUCT_ID=${PRODUCT_ID}  board.h=${BOARD_H}"
+
+          # 第 4 个参数是 board.h —— 见上面 customization.lanip 的说明
+          bash trunk/custom/scripts/setip.sh "$LANIP" trunk/user/shared/src/defaults.h trunk/user/www/dict/CN.dict "$BOARD_H"
+          bash trunk/custom/scripts/setaccount.sh "$SIGNACCOUNT" "$SIGNPASSWORD" trunk/user/shared/src/defaults.h "$BOARD_H"
+          bash trunk/custom/scripts/setwifi.sh "$WIFI2GSSID" "$WIFI2GPSK" "$WIFI5GSSID" "$WIFI5GPSK" trunk/user/shared/src/defaults.h "$BOARD_H"
 
           for key in $(env | grep '^PLUGIN_' | cut -d= -f1); do
             echo "CONFIG_FIRMWARE_INCLUDE_${key#PLUGIN_}=${!key}" >> "$CONFIGFILE"
@@ -226,6 +250,23 @@ jobs:
           name: ${{ inputs.target }}-${{ inputs.toolchain }}-${{ env.BUILD_DATE }}
           path: trunk/output/*.trx
 
+      - name: Verify Firmware Fits Partition
+        run: |
+          # 体积守卫。Padavan 的 rootfs 是【单个只读 squashfs】，没有 opkg、没有可写覆盖层
+          # ⇒ 固件必须整份落进 DTS 的 "firmware" 分区。仓库原本没有任何体积校验，
+          # 超了照样"构建成功"，刷进去是起不来的砖（刷机按名字写 firmware 分区）。
+          # 退出码：0=通过 / 1=超限（硬失败）/ 2=无法判定（只告警，不阻断好固件）
+          # 放在 upload-artifact 之后：超限时产物仍可下载排查，但 Release 被拦住。
+          set +e
+          bash trunk/custom/scripts/check_fw_size.sh "$PRODUCT_ID" trunk/output/*.trx
+          rc=$?
+          set -e
+          if [ "$rc" = "1" ]; then
+            echo "❌ 固件超出 firmware 分区，已中止发布"
+            exit 1
+          fi
+          echo "（size-guard rc=$rc：0=通过、2=无法判定，均放行）"
+
       - uses: softprops/action-gh-release@master
         if: ${{ inputs.release }}
         with:
@@ -234,7 +275,7 @@ jobs:
           body: |
             Build Summary:
             - Date: ${{ env.BUILD_DATE }}
-            - Target: ${{ inputs.target }}
+            - Target: ${{ inputs.target }} (PRODUCT_ID: ${{ env.PRODUCT_ID }})
             - Toolchain: ${{ inputs.toolchain }}
             - Nano: ${{ inputs.nanoversion }}
             - CPU OC: ${{ inputs.cpufreq }} (${{ inputs.mt7621_oc }})

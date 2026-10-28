@@ -112,24 +112,28 @@
 				reg = <0x200000 0x400000>;
 			
 			};
+			/* 扩容：原 20M 装不下 GHL 全量插件集（39 项）+ frps。
+			 * firmware 起点 0x600000 被 bootloader 钉死（= 原厂 kernel1），
+			 * 只能把尾部 Config/Storage/RWFS 整体后移来腾空间。
+			 * 启动标志在最前面的 CFG_Bdata，不受影响。*/
 			partition@600000 {
 				label = "firmware";
-				reg = <0x600000 0x1400000>;
+				reg = <0x600000 0x5000000>; /* 80M，原 20M */
 			};
 
-			partition@1a00000 {
+			partition@5600000 {
 				label = "Config";
-				reg = <0x1a00000 0x80000>; /* 512K */
+				reg = <0x5600000 0x80000>; /* 512K */
 			};
 
-			partition@1a80000 {
+			partition@5680000 {
 				label = "Storage";
-				reg = <0x1a80000 0x400000>; /* 4096K */
+				reg = <0x5680000 0x400000>; /* 4096K */
 			};
 
-			partition@1e80000 {
+			partition@5a80000 {
 				label = "RWFS";
-				reg = <0x1e80000 0x6100000>;
+				reg = <0x5a80000 0x2500000>; /* 37M，原 97M */
 			};
 
 			partition@all {

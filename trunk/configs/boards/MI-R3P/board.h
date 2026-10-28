@@ -19,3 +19,11 @@
 #define BOARD_HAS_EPHY_L1000		1
 #define BOARD_HAS_EPHY_W1000		1
 #define BOARD_NUM_UPHY_USB3		1
+
+/* Xiaomi Mi R3P 出厂默认值。此处定义会被 defaults.h 的 #ifndef 守卫接住，
+ * 只影响 MI-R3P 这一个板型；其他板型不定义这几项，自动走上游通用值。
+ * 备份/恢复出厂设置后生效（nvram_restore_defaults）。*/
+/* 管理地址。DHCP 池必须同网段，否则下发的是不可达网段 */
+#define DEF_LAN_ADDR		"192.168.31.1"
+#define DEF_LAN_DHCP_BEG		"192.168.31.100"
+#define DEF_LAN_DHCP_END		"192.168.31.244"
