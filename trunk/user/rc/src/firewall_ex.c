@@ -40,6 +40,12 @@
 /* state match - use xt_state (xt_conntrack more slower than xt_state) */
 #define CT_STATE		"state --state"
 
+#if defined (APP_WIREGUARD)
+/* WireGuard 隧道接口名。C 侧别处没有定义它（只在 shell 侧 wireguard.sh 的
+ * WG_IF 里），故这里自带一份。 */
+#define IFNAME_WG		"wg0"
+#endif
+
 static char *g_buf;
 static char g_buf_pool[1024];
 
@@ -1023,6 +1029,28 @@ ipt_filter_rules(char *man_if, char *wan_if, char *lan_if, char *lan_ip,
 			}
 #endif
 		}
+
+#if defined (APP_WIREGUARD)
+		/* 一键互联：放行从 WireGuard 隧道进来的流量，让对端节点能主动访问
+		 * 本机（管理页 192.168.9.1 / SSH / ping）。
+		 *
+		 * 本函数生成的所有 ACCEPT 规则都锚在 br0 / lo / ESTABLISHED,RELATED /
+		 * vpnc_if 上，没有一条认识 wg0。于是对端主动发起的连接，首包（ctstate
+		 * NEW）不匹配任何 ACCEPT ⇒ 落到链尾兜底 logdrop；而本机主动发起的连接，
+		 * 回包能命中 ESTABLISHED,RELATED ⇒ 通。这就是「只出不进」。
+		 *
+		 * ★ 位置很关键，两个约束同时成立：
+		 *   ① 必须在本段（dtype == "INPUT"，843-1036）之内 —— 本函数在
+		 *      1039 行才把 dtype 切成 "FORWARD"，块若排在 1039 之后，
+		 *      生成的就是 FORWARD 规则，INPUT 放行整个丢失。
+		 *   ② 必须在本段【链尾兜底之前】—— 1035 行那条 "-A INPUT -j logdrop"
+		 *      无条件匹配，排在它后面的规则永远不会被执行。
+		 *
+		 * 安全性由 WireGuard 自己兜底：源地址不在 AllowedIPs 里的包根本进不了
+		 * wg0，故这里无需再按源地址收窄。 */
+		if (nvram_match("wireguard_lan_access", "1"))
+			fprintf(fp, "-A %s -i %s -j %s\n", dtype, IFNAME_WG, "ACCEPT");
+#endif
 		
 		/* Drop all (only for log) */
 		if (is_logdrop)
@@ -1083,6 +1111,7 @@ ipt_filter_rules(char *man_if, char *wan_if, char *lan_if, char *lan_ip,
 		/* Pass multicast (do not log) */
 		if (nvram_match("mr_enable_x", "1"))
 			fprintf(fp, "-A %s -p udp -d 224.0.0.0/4 -j %s\n", dtype, "ACCEPT");
+
 #if 0
 		/* Filter out invalid WAN->WAN connections */
 		fprintf(fp, "-A %s -o %s ! -i %s -j %s\n", dtype, wan_if, lan_if, logdrop);
@@ -1105,7 +1134,18 @@ ipt_filter_rules(char *man_if, char *wan_if, char *lan_if, char *lan_ip,
 	if (is_fw_enabled) {
 		/* Accept LAN other outbound traffic */
 		fprintf(fp, "-A %s -i %s -j %s\n", dtype, lan_if, "ACCEPT");
-		
+
+#if defined (APP_WIREGUARD)
+		/* 一键互联：放行从 WireGuard 隧道进来、发往本网段的流量，让对端节点
+		 * 能主动访问 LAN 内所有设备（192.168.9.x …）。
+		 *
+		 * 只放行「出接口 = 本网段」这一种：对端拿本机当出口网关去访问公网不在
+		 * 承诺范围内，那条路径仍会落到链尾兜底 logdrop。
+		 *
+		 * 回程无需额外规则：本链已有「-i br0 -j ACCEPT」，OUTPUT 恒 ACCEPT。 */
+		if (nvram_match("wireguard_lan_access", "1"))
+			fprintf(fp, "-A %s -i %s -o %s -j %s\n", dtype, IFNAME_WG, lan_if, "ACCEPT");
+#endif
 		/* Pass ICMPv4 in gateway mode w/o NAT */
 		if (!is_nat_enabled) {
 			if (nvram_invmatch("misc_ping_x", "0"))

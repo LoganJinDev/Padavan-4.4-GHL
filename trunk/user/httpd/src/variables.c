@@ -1057,6 +1057,8 @@
 			 * 依据（WireGuard 自己不会往路由表插条目）；留空则脚本回落 0.0.0.0/0。
 			 * 原先此处重复了一行 wireguard_localip（上游笔误），已移除。 */
 			{"wireguard_allowedips", "", NULL, EVM_RESTART_WIREGUARD},
+			/* 一键互联开关：改变它需要重建 iptables 规则，故同样挂 RESTART */
+			{"wireguard_lan_access", "", NULL, EVM_RESTART_WIREGUARD},
 			{0,0,0,0}
 		};
 #endif

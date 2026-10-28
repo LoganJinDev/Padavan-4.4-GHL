@@ -80,9 +80,59 @@ setup_route() {
 	IFS=','
 	for net in $allowed; do
 		[ -n "$net" ] || continue
+		# 本机已有该网段的直连路由（= 自己的 LAN / WAN）→ 跳过。
+		# 否则下面那条 replace 会顶掉 br0 的 proto kernel 直连路由，把发往
+		# 本网段的包全送进隧道 ⇒ 管理页与 SSH 立刻失联（单向断连）。
+		#
+		# 判定用【精确前缀】而不是包含关系：ip route replace 只在前缀完全
+		# 相同时才覆盖，超网（用户填 192.168.0.0/16 而本机是 /24）会被更长
+		# 前缀的直连路由压住、本来就无害。反过来若用包含判断，会误伤
+		# 0.0.0.0/0 —— 那是全量分流的正常默认值，必须照常铺进隧道。
+		if ip route show "$net" 2>/dev/null | grep -q 'proto kernel'; then
+			logger -t "WIREGUARD" "跳过 $net：与本机直连网段冲突，保留原路由"
+			continue
+		fi
 		ip route replace "$net" dev "$WG_IF"
 	done
 	IFS="$old_ifs"
+}
+
+# ---- 一键互联：放行从隧道进来的流量 ----
+#
+# Padavan 的防火墙不认识 wg0：INPUT 只放行 br0 / lo / ESTABLISHED，FORWARD 只
+# 放行 br0 与 ESTABLISHED。于是【对端主动发起】的连接（ping / SSH / 管理页）
+# 首包不匹配任何 ACCEPT ⇒ 被 DROP；而本机主动发起的连接，回包能命中
+# ESTABLISHED,RELATED ⇒ 通。这就是「GHL 能访问对端、对端访问不到 GHL」。
+#
+# 两条规则补上缺口：
+#   INPUT   -i wg0 -j ACCEPT          → 对端能访问本机（管理页 / SSH / ping）
+#   FORWARD -i wg0 -o br0 -j ACCEPT   → 对端能访问 LAN 内所有设备
+# 回程无需额外规则：FORWARD 已有「-i br0 -j ACCEPT」，OUTPUT 策略是 ACCEPT。
+# 安全性由 WireGuard 自己兜底：源地址不在 AllowedIPs 里的包根本进不了 wg0。
+#
+# ★ 规则本体不在这里，由 firewall_ex.c 的 ipt_filter_rules() 按 nvram 开关
+#   直接 fprintf 进 /tmp/ipt_filter.rules 生成。理由：filter 表会被
+#   iptables-restore 整表重建（改任何防火墙设置都触发），重建后必须由 C 侧
+#   重新生成；而若改由本脚本写一个 /tmp 下的脚本文件让 C 侧去执行，就等于
+#   让 root 执行世界可写目录（/tmp 是 1777 tmpfs）里的文件 —— 本地提权面。
+#   本脚本只负责「立刻生效」这一半。
+#
+# 为什么脚本这边还要自己执行一遍 —— 开机时防火墙与 WireGuard 谁先跑不确定：
+#   防火墙先跑 → 那时 nvram 开关已是 1 → 规则已被写进规则集，这里是幂等重放
+#   WireGuard 先跑 → 规则集里还没有 → 这里补上，随后防火墙重建时再生成一次
+# 两条都用「-C 探测，没有才 -A」⇒ 不堆叠。
+enable_lan_access() {
+	iptables -C INPUT -i "$WG_IF" -j ACCEPT 2>/dev/null || \
+		iptables -A INPUT -i "$WG_IF" -j ACCEPT
+	iptables -C FORWARD -i "$WG_IF" -o br0 -j ACCEPT 2>/dev/null || \
+		iptables -A FORWARD -i "$WG_IF" -o br0 -j ACCEPT
+	logger -t "WIREGUARD" "已放行隧道入站：对端可访问本机与 LAN 设备"
+}
+
+# 关闭：撤规则。规则本体由 C 侧按 nvram 开关决定是否生成，这里无需删文件。
+disable_lan_access() {
+	iptables -D INPUT -i "$WG_IF" -j ACCEPT 2>/dev/null
+	iptables -D FORWARD -i "$WG_IF" -o br0 -j ACCEPT 2>/dev/null
 }
 
 start_wg() {
@@ -127,6 +177,15 @@ start_wg() {
 	iptables -t nat -C POSTROUTING -o "$WG_IF" -j MASQUERADE 2>/dev/null || \
 		iptables -t nat -A POSTROUTING -o "$WG_IF" -j MASQUERADE
 
+	# ---- 一键互联（默认关）：放行隧道入站 ----
+	# 关掉开关时也要走 disable —— 否则上一轮留下的放行规则会一直在，
+	# 用户以为关了其实没关。
+	if [ "$(nvram get wireguard_lan_access)" = "1" ]; then
+		enable_lan_access
+	else
+		disable_lan_access
+	fi
+
 	logger -t "WIREGUARD" "wireguard 已启动，分流网段：$allowed"
 	return 0
 }
@@ -144,6 +203,10 @@ stop_wg() {
 	restore_default_route
 
 	iptables -t nat -D POSTROUTING -o "$WG_IF" -j MASQUERADE 2>/dev/null
+
+	# 撤掉一键互联的入站放行规则
+	disable_lan_access
+
 	rm -f "$WG_KEY"
 	logger -t "WIREGUARD" "正在关闭wireguard"
 	return 0

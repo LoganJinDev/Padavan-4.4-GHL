@@ -866,6 +866,9 @@ struct nvram_pair router_defaults[] = {
 	{ "wireguard_peerkey", "" },
 	/* 允许走隧道的目标网段，逗号分隔；留空时脚本回落 0.0.0.0/0（全量） */
 	{ "wireguard_allowedips", "0.0.0.0/0" },
+	/* 一键互联：放行从隧道进来的流量，让对端节点能主动访问本机与 LAN 设备。
+	 * 默认关 —— 打开等于把管理页与整个 LAN 暴露给 overlay 里的所有节点。 */
+	{ "wireguard_lan_access", "0" },
 #endif
 
 #if defined(APP_SQM)
