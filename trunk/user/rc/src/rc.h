@@ -601,6 +601,11 @@ void stop_wireguard(void);
 void start_wireguard(void);
 void restart_wireguard(void);
 #endif
+#if defined(APP_EASYTIER)
+void stop_easytier(void);
+void start_easytier(void);
+void restart_easytier(void);
+#endif
 #if defined(APP_SMARTDNS)
 void stop_smartdns(void);
 void start_smartdns(void);

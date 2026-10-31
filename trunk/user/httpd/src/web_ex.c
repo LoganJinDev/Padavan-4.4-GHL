@@ -2715,6 +2715,11 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 #else
 	int found_app_wireguard = 0;
 #endif
+#if defined(APP_EASYTIER)
+	int found_app_easytier = 1;
+#else
+	int found_app_easytier = 0;
+#endif
 #if defined(APP_FRP)
 	int found_app_frp = 1;
 #else
@@ -2911,7 +2916,8 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 		"function found_app_vpnsvr() { return %d;}\n"
 		"function found_app_vpncli() { return %d;}\n"
 		"function found_app_smartdns() { return %d;}\n"
-		"function found_app_adguardhome() { return %d;}\n",
+		"function found_app_adguardhome() { return %d;}\n"
+		"function found_app_easytier() { return %d;}\n",
 		found_utl_hdparm,
 		found_app_ovpn,
 		found_app_dlna,
@@ -2945,7 +2951,8 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 		found_app_vpnsvr,
 		found_app_vpncli,
 		found_app_smartdns,
-		found_app_adguardhome
+		found_app_adguardhome,
+		found_app_easytier
 	);
 
 	websWrite(wp,

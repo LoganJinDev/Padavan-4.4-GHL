@@ -866,9 +866,26 @@ struct nvram_pair router_defaults[] = {
 	{ "wireguard_peerkey", "" },
 	/* 允许走隧道的目标网段，逗号分隔；留空时脚本回落 0.0.0.0/0（全量） */
 	{ "wireguard_allowedips", "0.0.0.0/0" },
-	/* 一键互联：放行从隧道进来的流量，让对端节点能主动访问本机与 LAN 设备。
-	 * 默认关 —— 打开等于把管理页与整个 LAN 暴露给 overlay 里的所有节点。 */
-	{ "wireguard_lan_access", "0" },
+#endif
+
+#if defined(APP_EASYTIER)
+	/*EasyTier*/
+	{ "easytier_enable", "0" },
+	{ "easytier_network_name", "" },
+	{ "easytier_network_secret", "" },
+	{ "easytier_ipv4", "" },
+	{ "easytier_peers", "" },
+	{ "easytier_proxy_networks", "" },
+	{ "easytier_exit_nodes", "" },
+	{ "easytier_hostname", "" },
+	{ "easytier_mtu", "" },
+	{ "easytier_disable_p2p", "0" },
+	{ "easytier_masq", "1" },
+	{ "easytier_rpc_port", "" },
+	{ "easytier_listen_port", "11010" },
+	{ "easytier_dev_name", "et0" },
+	{ "easytier_log_level", "info" },
+	{ "easytier_download_proxy", "" },
 #endif
 
 #if defined(APP_SQM)

@@ -1195,6 +1195,12 @@ handle_notifications(void)
 			restart_wireguard();
 		}
 #endif
+#if defined(APP_EASYTIER)
+		else if (strcmp(entry->d_name, RCN_RESTART_EASYTIER) == 0)
+		{
+			restart_easytier();
+		}
+#endif
 #if defined(APP_SQM)
 		else if (strcmp(entry->d_name, RCN_RESTART_SQM) == 0)
 		{

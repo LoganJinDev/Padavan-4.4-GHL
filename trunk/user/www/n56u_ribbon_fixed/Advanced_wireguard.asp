@@ -28,7 +28,6 @@ var $j = jQuery.noConflict();
 $j(document).ready(function() {
 	
 	init_itoggle('wireguard_enable');
-	init_itoggle('wireguard_lan_access');
 
 });
 
@@ -50,6 +49,7 @@ showhide_div('allink', found_app_aliddns());
 showhide_div('zelink', found_app_zerotier());
 showhide_div('ddlink', found_app_ddnsto());
 showhide_div('frlink', found_app_frp());
+showhide_div('etlink', found_app_easytier());
 }
 
 function applyRule(){
@@ -139,6 +139,9 @@ function done_validating(action){
 								<li id="frlink" style="display:none">
                                     <a href="Advanced_frp.asp"><#menu5_25_1#></a>
                                 </li>
+								<li id="etlink" style="display:none">
+                                    <a href="Advanced_easytier.asp"><#menu5_38_1#></a>
+                                </li>
                             </ul>
                         </div>
 								<div class="row-fluid">
@@ -204,26 +207,6 @@ function done_validating(action){
 				<td>
 					<input type="text" class="input" name="wireguard_allowedips" id="wireguard_allowedips" style="width: 320px" value="<% nvram_get_x("","wireguard_allowedips"); %>" />
 				</td>
-
-										</tr>
-										<tr>
-										<th>允许对端访问本机与局域网设备</th>
-											<td>
-												<div class="main_itoggle">
-												<div id="wireguard_lan_access_on_of">
-													<input type="checkbox" id="wireguard_lan_access_fake" <% nvram_match_x("", "wireguard_lan_access", "1", "value=1 checked"); %><% nvram_match_x("", "wireguard_lan_access", "0", "value=0"); %>  />
-												</div>
-												</div>
-												<div style="position: absolute; margin-left: -10000px;">
-													<input type="radio" value="1" name="wireguard_lan_access" id="wireguard_lan_access_1" class="input" value="1" <% nvram_match_x("", "wireguard_lan_access", "1", "checked"); %> /><#checkbox_Yes#>
-													<input type="radio" value="0" name="wireguard_lan_access" id="wireguard_lan_access_0" class="input" value="0" <% nvram_match_x("", "wireguard_lan_access", "0", "checked"); %> /><#checkbox_No#>
-												</div>
-												<p style="margin: 4px 0 0 0; color: #888; font-size: 12px;">
-													打开后，对端节点可主动访问本机（管理页 / SSH）与本网段内所有设备。<br>
-													本机主动访问对端不受此开关影响；关掉则恢复默认（只出不进）。
-												</p>
-											</td>
-
 
 										</tr>
 										<tr>

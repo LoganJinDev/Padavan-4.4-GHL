@@ -50,6 +50,7 @@ showhide_div('zelink', found_app_zerotier());
 showhide_div('ddlink', found_app_ddnsto());
 showhide_div('wilink', found_app_wireguard());
 showhide_div('frlink', found_app_frp());
+showhide_div('etlink', found_app_easytier());
 }
 
 function textarea_scripts_enabled(v){
@@ -156,6 +157,9 @@ function change_aliddns_enable_bridge(mflag){
                                 </li>
 								<li id="frlink" style="display:none">
                                     <a href="Advanced_frp.asp"><#menu5_25_1#></a>
+                                </li>
+								<li id="etlink" style="display:none">
+                                    <a href="Advanced_easytier.asp"><#menu5_38_1#></a>
                                 </li>
                             </ul>
                         </div>

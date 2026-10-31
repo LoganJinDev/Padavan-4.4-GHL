@@ -210,6 +210,10 @@ dir_y 						+= wireguard-tools
 dir_y						+= wg-quick
 endif
 
+ifeq ($(CONFIG_FIRMWARE_INCLUDE_EASYTIER),y)
+dir_y						+= easytier
+endif
+
 ifdef CONFIG_BLK_DEV_SD
 dir_$(CONFIG_FIRMWARE_INCLUDE_HDPARM)		+= hdparm
 endif

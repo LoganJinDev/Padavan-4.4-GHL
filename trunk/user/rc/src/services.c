@@ -518,6 +518,22 @@ void restart_wireguard(void){
 	start_wireguard();
 }
 #endif
+#if defined(APP_EASYTIER)
+void stop_easytier(void){
+	eval("/usr/bin/easytier.sh","stop");
+}
+
+void start_easytier(void){
+	int easytier_enable = nvram_get_int("easytier_enable");
+	if ( easytier_enable == 1)
+		eval("/usr/bin/easytier.sh","start");
+}
+
+void restart_easytier(void){
+	stop_easytier();
+	start_easytier();
+}
+#endif
 
 #if defined(APP_ADBYBY)
 void stop_adbyby(void){

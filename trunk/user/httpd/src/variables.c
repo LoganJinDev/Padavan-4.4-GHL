@@ -1057,8 +1057,29 @@
 			 * 依据（WireGuard 自己不会往路由表插条目）；留空则脚本回落 0.0.0.0/0。
 			 * 原先此处重复了一行 wireguard_localip（上游笔误），已移除。 */
 			{"wireguard_allowedips", "", NULL, EVM_RESTART_WIREGUARD},
-			/* 一键互联开关：改变它需要重建 iptables 规则，故同样挂 RESTART */
-			{"wireguard_lan_access", "", NULL, EVM_RESTART_WIREGUARD},
+			{0,0,0,0}
+		};
+#endif
+#if defined(APP_EASYTIER)
+	struct variable variables_EASYTIER[] = {
+			{"easytier_enable", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_network_name", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_network_secret", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_ipv4", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_peers", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_proxy_networks", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_exit_nodes", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_hostname", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_mtu", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_disable_p2p", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_masq", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_rpc_port", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_listen_port", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_dev_name", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_log_level", "", NULL, EVM_RESTART_EASYTIER},
+			/* 下载代理只影响 easytier_download.sh，跟隧道运行态无关 ⇒
+			 * 事件掩码留 0，改它不该把已经跑起来的隧道重启一遍。 */
+			{"easytier_download_proxy", "", NULL, 0},
 			{0,0,0,0}
 		};
 #endif
@@ -1403,6 +1424,9 @@
 #if defined(APP_WIREGUARD)
 		{"WIREGUARD",		variables_WIREGUARD},
 #endif
+#if defined(APP_EASYTIER)
+		{"EASYTIER",		variables_EASYTIER},
+#endif
 #if defined(APP_SQM)
 		{"SqmConf",		variables_SqmConf},
 #endif
@@ -1525,6 +1549,9 @@
 #endif
 #if defined(APP_WIREGUARD)
 		{EVM_RESTART_WIREGUARD,		EVT_RESTART_WIREGUARD,		RCN_RESTART_WIREGUARD,	0},
+#endif
+#if defined(APP_EASYTIER)
+		{EVM_RESTART_EASYTIER,	EVT_RESTART_EASYTIER,	RCN_RESTART_EASYTIER,	0},
 #endif
 #if defined(APP_SMARTDNS)
 		{EVM_RESTART_SMARTDNS,		EVT_RESTART_SMARTDNS,		RCN_RESTART_SMARTDNS,	0},
