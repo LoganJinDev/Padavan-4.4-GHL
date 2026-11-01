@@ -379,6 +379,71 @@ update_vga_clamp_rt(int first_call)
 #endif
 }
 
+/* 额外 SSID 槽的接口名：idx 取 1..3（2.4G → ra2..ra4，5G → rai2..rai4）
+ * 命名随 netutils.h 的分支走，与 IFNAME_*_MAIN/_GUEST 同规律 */
+static const char *
+wlan_ext_ifname(int is_aband, int idx)
+{
+	static const char *const names_rt[] = { IFNAME_2G_EXT1, IFNAME_2G_EXT2, IFNAME_2G_EXT3 };
+#if BOARD_HAS_5G_RADIO
+	static const char *const names_wl[] = { IFNAME_5G_EXT1, IFNAME_5G_EXT2, IFNAME_5G_EXT3 };
+#endif
+
+	if (idx < 1)
+		idx = 1;
+	if (idx > 3)
+		idx = 3;
+
+#if BOARD_HAS_5G_RADIO
+	if (is_aband)
+		return names_wl[idx - 1];
+#else
+	(void)is_aband;
+#endif
+	return names_rt[idx - 1];
+}
+
+/* 额外 SSID 槽全槽 down */
+static void
+stop_wifi_ext(int is_aband)
+{
+	int i;
+
+	for (i = 1; i <= 3; i++)
+		wif_control(wlan_ext_ifname(is_aband, i), 0);
+}
+
+/* 额外 SSID 槽全槽摘桥（关闭分支 / 仅 WDS / 仅 ApCli 时用） */
+static void
+br_del_wifi_ext(int is_aband)
+{
+	int i;
+
+	for (i = 1; i <= 3; i++)
+		br_add_del_if(IFNAME_BR, wlan_ext_ifname(is_aband, i), 0);
+}
+
+/* 额外 SSID 槽逐槽拉起并入桥。
+ * 判据 is_ext_allowed() = 启用 且 SSID 非空 且（非开放网络时）密码 >= 8 位，
+ * 不合规的槽只保证不在 br0 里，不拉起 —— 避免广播出空 SSID 的信标 */
+static void
+start_wifi_ap_ext(int is_aband)
+{
+	int i;
+
+	for (i = 1; i <= 3; i++) {
+		const char *wifn = wlan_ext_ifname(is_aband, i);
+
+		if (!is_ext_allowed(is_aband, i)) {
+			br_add_del_if(IFNAME_BR, wifn, 0);
+			continue;
+		}
+		wif_control(wifn, 1);
+		br_add_del_if(IFNAME_BR, wifn, 1);
+		wif_control_m2u(is_aband, wifn);
+	}
+}
+
 void 
 stop_wifi_all_wl(void)
 {
@@ -395,6 +460,9 @@ stop_wifi_all_wl(void)
 	// stop AP (guest + main)
 	wif_control(IFNAME_5G_GUEST, 0);
 	wif_control(IFNAME_5G_MAIN, 0);
+
+	// stop 额外 SSID 槽（ext1..ext3）
+	stop_wifi_ext(1);
 
 	LED_CONTROL(LED_SW5G, LED_OFF);
 #endif
@@ -422,6 +490,9 @@ stop_wifi_all_rt(void)
 	wif_control(IFNAME_2G_GUEST, 0);
 	wif_control(IFNAME_2G_MAIN, 0);
 
+	// stop 额外 SSID 槽（ext1..ext3）
+	stop_wifi_ext(0);
+
 	LED_CONTROL(LED_SW2G, LED_OFF);
 }
 
@@ -436,6 +507,7 @@ start_wifi_ap_wl(int radio_on)
 	{
 		br_add_del_if(IFNAME_BR, IFNAME_5G_GUEST, 0);
 		br_add_del_if(IFNAME_BR, IFNAME_5G_MAIN, 0);
+		br_del_wifi_ext(1);
 	}
 
 	mlme_state_wl(radio_on);
@@ -453,6 +525,9 @@ start_wifi_ap_wl(int radio_on)
 			br_add_del_if(IFNAME_BR, IFNAME_5G_GUEST, 1);
 			wif_control_m2u(1, IFNAME_5G_GUEST);
 		}
+
+		// 额外 SSID 槽（ext1..ext3）
+		start_wifi_ap_ext(1);
 	}
 #endif
 }
@@ -474,6 +549,7 @@ start_wifi_ap_rt(int radio_on)
 #else
 		br_add_del_if(IFNAME_BR, IFNAME_2G_GUEST, 0);
 		br_add_del_if(IFNAME_BR, IFNAME_2G_MAIN, 0);
+		br_del_wifi_ext(0);
 #endif
 	}
 
@@ -508,6 +584,9 @@ start_wifi_ap_rt(int radio_on)
 			br_add_del_if(IFNAME_BR, IFNAME_2G_GUEST, 1);
 			wif_control_m2u(0, IFNAME_2G_GUEST);
 		}
+
+		// 额外 SSID 槽（ext1..ext3）
+		start_wifi_ap_ext(0);
 	}
 #endif
 }
@@ -1143,6 +1222,47 @@ ebtables_filter_guest_ap(const char *wifname, int is_aband, int i_need_dhcp)
 #endif
 }
 
+/* 额外 SSID 槽的网桥端口隔离（管"跨 SSID 能否互访"）。
+ * 驱动 NoForwarding 只隔离同一槽内的客户端，跨槽互访要靠这里的 isolate_mode；
+ * AP 模式下还需 ebtables 兜底，故返回"待补规则"的位掩码。
+ * 位分配：2.4G ext1..3 = 0x02/0x04/0x08，5G ext1..3 = 0x20/0x40/0x80 */
+static int
+apply_wifi_ext_isolation(int is_aband, int is_ap_mode)
+{
+	int i, bp_isolate, mask = 0;
+	int bit = (is_aband) ? 0x20 : 0x02;
+
+	for (i = 1; i <= 3; i++) {
+		const char *wifn = wlan_ext_ifname(is_aband, i);
+
+		if (!is_interface_up(wifn))
+			continue;
+
+		bp_isolate = 0;
+		if (nvram_wlan_get_ext_int(is_aband, i, "ap_isolate")) {
+			if (!is_ap_mode)
+				bp_isolate = 1;
+			else
+				mask |= bit << (i - 1);
+		}
+		brport_set_param_int(wifn, "isolate_mode", bp_isolate);
+	}
+	return mask;
+}
+
+/* 给被隔离的额外 SSID 槽补 ebtables 规则，mask 由 apply_wifi_ext_isolation() 给出 */
+static void
+ebtables_filter_wifi_ext(int is_aband, int mask, int i_need_dhcp)
+{
+	int i;
+	int bit = (is_aband) ? 0x20 : 0x02;
+
+	for (i = 1; i <= 3; i++) {
+		if (mask & (bit << (i - 1)))
+			ebtables_filter_guest_ap(wlan_ext_ifname(is_aband, i), is_aband, i_need_dhcp);
+	}
+}
+
 void
 restart_guest_lan_isolation(void)
 {
@@ -1163,6 +1283,8 @@ restart_guest_lan_isolation(void)
 	}
 
 	brport_set_param_int(wl_ifname_guest, "isolate_mode", bp_isolate);
+
+	is_need_ebtables |= apply_wifi_ext_isolation(1, is_ap_mode);
 #endif
 
 	bp_isolate = 0;
@@ -1183,6 +1305,8 @@ restart_guest_lan_isolation(void)
 
 	brport_set_param_int(rt_ifname_guest, "isolate_mode", bp_isolate);
 
+	is_need_ebtables |= apply_wifi_ext_isolation(0, is_ap_mode);
+
 	if (!is_ap_mode)
 		return;
 
@@ -1195,9 +1319,11 @@ restart_guest_lan_isolation(void)
 #if BOARD_HAS_5G_RADIO
 		if (is_need_ebtables & 0x10)
 			ebtables_filter_guest_ap(wl_ifname_guest, 1, i_need_dhcp);
+		ebtables_filter_wifi_ext(1, is_need_ebtables, i_need_dhcp);
 #endif
 		if (is_need_ebtables & 0x01)
 			ebtables_filter_guest_ap(rt_ifname_guest, 0, i_need_dhcp);
+		ebtables_filter_wifi_ext(0, is_need_ebtables, i_need_dhcp);
 	}
 	else if (is_module_loaded("ebtables")) {
 		doSystem("ebtables %s", "-F");

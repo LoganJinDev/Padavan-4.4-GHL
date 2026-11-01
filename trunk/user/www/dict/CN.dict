@@ -2046,3 +2046,5 @@ pppoemwan1=内网IP分流
 pppoemwan1_1=出口序号
 pppoemwan0=禁用443负载均衡
 AP_Relay=中继增强 (自动搜索 切换 信道 信号)【点击打开配置脚本】
+WLANExtSSID=额外 SSID
+WLANExtSSIDNote=提示：保存本页会让本频段所有 SSID 短暂中断数秒。启用后的槽必须填写 SSID 名称；若非开放网络，密码至少 8 位。

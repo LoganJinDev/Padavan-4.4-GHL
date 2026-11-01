@@ -28,6 +28,17 @@ var $j = jQuery.noConflict();
 $j(document).ready(function() {
 	init_itoggle('rt_radio_x');
 	init_itoggle('rt_closed');
+
+	// 额外 SSID 槽（ext1..ext3）：启用开关带联动回调；隐藏/隔离开关无联动
+	init_itoggle('rt_ext1_enable', function(){ change_ext_enabled(1); });
+	init_itoggle('rt_ext2_enable', function(){ change_ext_enabled(2); });
+	init_itoggle('rt_ext3_enable', function(){ change_ext_enabled(3); });
+	init_itoggle('rt_ext1_closed');
+	init_itoggle('rt_ext2_closed');
+	init_itoggle('rt_ext3_closed');
+	init_itoggle('rt_ext1_ap_isolate');
+	init_itoggle('rt_ext2_ap_isolate');
+	init_itoggle('rt_ext3_ap_isolate');
 });
 
 </script>
@@ -67,11 +78,23 @@ function initial(){
 	document.form.rt_key4.value = decodeURIComponent(document.form.rt_key4_org.value);
 	document.form.rt_phrase_x.value = decodeURIComponent(document.form.rt_phrase_x_org.value);
 
+	// 额外 SSID 槽：org 隐藏域解码（与主 SSID 同一套转义往返）
+	for (var ei = 1; ei <= 3; ei++) {
+		document.form['rt_ext' + ei + '_ssid'].value =
+			decodeURIComponent(document.form['rt_ext' + ei + '_ssid_org'].value);
+		document.form['rt_ext' + ei + '_wpa_psk'].value =
+			decodeURIComponent(document.form['rt_ext' + ei + '_wpa_psk_org'].value);
+	}
+
 	if(document.form.rt_wpa_psk.value.length < 1)
 		document.form.rt_wpa_psk.value = "Please type Password";
 
 	insertChannelOption();
 	rt_auth_mode_change(1);
+
+	// 额外 SSID 槽：按启用状态初始化各行显隐
+	for (var ej = 1; ej <= 3; ej++)
+		change_ext_enabled(ej);
 
 	document.form.rt_channel.value = document.form.rt_channel_orig.value;
 
@@ -216,11 +239,61 @@ function validForm(){
 			return false;
 	}
 
+	// 额外 SSID 槽：仅校验已启用的槽（未启用不参与校验）
+	for (var ei = 1; ei <= 3; ei++) {
+		if (!document.form['rt_ext' + ei + '_enable'][0].checked)
+			continue;
+		if (document.form['rt_ext' + ei + '_ssid'].value.length < 1) {
+			document.form['rt_ext' + ei + '_ssid'].focus();
+			return false;
+		}
+		if (!validate_string_ssid(document.form['rt_ext' + ei + '_ssid']))
+			return false;
+		if (document.form['rt_ext' + ei + '_auth_mode'].value == "psk" &&
+		    !validate_psk(document.form['rt_ext' + ei + '_wpa_psk']))
+			return false;
+	}
+
 	return true;
 }
 
 function done_validating(action){
 	refreshpage();
+}
+
+/* 额外 SSID 槽：启用开关联动 —— 关闭时隐藏该槽全部配置行 */
+function change_ext_enabled(n) {
+	var v = document.form['rt_ext' + n + '_enable'][0].checked;
+	showhide_div('row_ext' + n + '_ssid', v);
+	showhide_div('row_ext' + n + '_auth', v);
+	showhide_div('row_ext' + n + '_crypto', v);
+	showhide_div('row_ext' + n + '_psk', v);
+	showhide_div('row_ext' + n + '_closed', v);
+	showhide_div('row_ext' + n + '_isolate', v);
+	if (v)
+		change_ext_auth_mode(n);
+}
+
+/* 额外 SSID 槽：认证方式联动 —— 非 psk 时置灰加密与密码，并同步 wpa_mode 隐藏域。
+ * 三个 psk 选项 value 相同，靠显示文本区分（与主 SSID 的 change_common_rt 同思路） */
+function change_ext_auth_mode(n) {
+	var sel = document.form['rt_ext' + n + '_auth_mode'];
+	var opts = sel.options;
+
+	if (sel.value == "psk") {
+		inputCtrl(document.form['rt_ext' + n + '_crypto'], 1);
+		inputCtrl(document.form['rt_ext' + n + '_wpa_psk'], 1);
+		if (opts[opts.selectedIndex].text.indexOf("WPA2-Personal") == 0)
+			document.form['rt_ext' + n + '_wpa_mode'].value = "2";
+		else if (opts[opts.selectedIndex].text.indexOf("WPA-Personal") == 0)
+			document.form['rt_ext' + n + '_wpa_mode'].value = "1";
+		else
+			document.form['rt_ext' + n + '_wpa_mode'].value = "0";
+	}
+	else {
+		inputCtrl(document.form['rt_ext' + n + '_crypto'], 0);
+		inputCtrl(document.form['rt_ext' + n + '_wpa_psk'], 0);
+	}
 }
 
 function change_key_des(){
@@ -285,6 +358,12 @@ function validate_wlphrase(s, v, obj){
     <input type="hidden" name="rt_key3_org" value="<% nvram_char_to_ascii("", "rt_key3"); %>">
     <input type="hidden" name="rt_key4_org" value="<% nvram_char_to_ascii("", "rt_key4"); %>">
     <input type="hidden" name="rt_phrase_x_org" value="<% nvram_char_to_ascii("", "rt_phrase_x"); %>">
+    <input type="hidden" name="rt_ext1_ssid_org" value="<% nvram_char_to_ascii("", "rt_ext1_ssid"); %>">
+    <input type="hidden" name="rt_ext1_wpa_psk_org" value="<% nvram_char_to_ascii("", "rt_ext1_wpa_psk"); %>">
+    <input type="hidden" name="rt_ext2_ssid_org" value="<% nvram_char_to_ascii("", "rt_ext2_ssid"); %>">
+    <input type="hidden" name="rt_ext2_wpa_psk_org" value="<% nvram_char_to_ascii("", "rt_ext2_wpa_psk"); %>">
+    <input type="hidden" name="rt_ext3_ssid_org" value="<% nvram_char_to_ascii("", "rt_ext3_ssid"); %>">
+    <input type="hidden" name="rt_ext3_wpa_psk_org" value="<% nvram_char_to_ascii("", "rt_ext3_wpa_psk"); %>">
     <input type="hidden" name="rt_gmode_protection" value="<% nvram_get_x("", "rt_gmode_protection"); %>">
     <input type="hidden" name="rt_mode_x" value="<% nvram_get_x("","rt_mode_x"); %>">
     <input type="hidden" name="rt_nmode" value="<% nvram_get_x("","rt_nmode"); %>">
@@ -581,6 +660,243 @@ function validate_wlphrase(s, v, obj){
                                         </tr>
                                     </table>
 
+
+                                    <table class="table">
+                                        <tr>
+                                            <th colspan="2" style="border-top: 0 none;"><#WLANExtSSID#></th>
+                                        </tr>
+                                        <tr>
+                                            <td colspan="2" style="color: #F75; border-top: 0 none;"><#WLANExtSSIDNote#></td>
+                                        </tr>
+                                        <tr>
+                                            <th><#WLANExtSSID#> 1</th>
+                                            <td>
+                                                <div class="main_itoggle">
+                                                    <div id="rt_ext1_enable_on_of">
+                                                        <input type="checkbox" id="rt_ext1_enable_fake" <% nvram_match_x("", "rt_ext1_enable", "1", "value=1 checked"); %><% nvram_match_x("", "rt_ext1_enable", "0", "value=0"); %>>
+                                                    </div>
+                                                </div>
+                                                <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" id="rt_ext1_enable_1" name="rt_ext1_enable" class="input" <% nvram_match_x("","rt_ext1_enable", "1", "checked"); %>><#checkbox_Yes#>
+                                                        <input type="radio" value="0" id="rt_ext1_enable_0" name="rt_ext1_enable" class="input" <% nvram_match_x("","rt_ext1_enable", "0", "checked"); %>><#checkbox_No#>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext1_ssid" style="display:none;">
+                                            <th><#WLANConfig11b_SSID_itemname#></th>
+                                            <td><input type="text" maxlength="32" class="input" size="32" name="rt_ext1_ssid" value="" onkeypress="return is_string(this,event);"></td>
+                                        </tr>
+                                        <tr id="row_ext1_auth" style="display:none;">
+                                            <th><#WLANConfig11b_AuthenticationMethod_itemname#></th>
+                                            <td>
+                                                <select name="rt_ext1_auth_mode" class="input" onChange="change_ext_auth_mode(1);">
+                                                    <option value="open" <% nvram_match_x("", "rt_ext1_auth_mode", "open", "selected"); %>>Open System</option>
+                                                    <option value="psk" <% nvram_double_match_x("", "rt_ext1_auth_mode", "psk", "", "rt_ext1_wpa_mode", "2", "selected"); %>>WPA2-Personal (*)</option>
+                                                    <option value="psk" <% nvram_double_match_x("", "rt_ext1_auth_mode", "psk", "", "rt_ext1_wpa_mode", "1", "selected"); %>>WPA-Personal</option>
+                                                    <option value="psk" <% nvram_double_match_x("", "rt_ext1_auth_mode", "psk", "", "rt_ext1_wpa_mode", "0", "selected"); %>>WPA-Auto-Personal</option>
+                                                </select>
+                                                <input type="hidden" name="rt_ext1_wpa_mode" value="<% nvram_get_x("","rt_ext1_wpa_mode"); %>">
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext1_crypto" style="display:none;">
+                                            <th><#WLANConfig11b_WPAType_itemname#></th>
+                                            <td>
+                                                <select name="rt_ext1_crypto" class="input">
+                                                    <option value="aes" <% nvram_match_x("", "rt_ext1_crypto", "aes", "selected"); %>>AES</option>
+                                                    <option value="tkip+aes" <% nvram_match_x("", "rt_ext1_crypto", "tkip+aes", "selected"); %>>TKIP+AES</option>
+                                                </select>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext1_psk" style="display:none;">
+                                            <th><#WLANConfig11b_x_PSKKey_itemname#></th>
+                                            <td>
+                                                <div class="input-append">
+                                                    <input type="password" name="rt_ext1_wpa_psk" id="rt_ext1_wpa_psk" maxlength="64" size="32" value="" style="width: 175px;">
+                                                    <button style="margin-left: -5px;" class="btn" type="button" onclick="passwordShowHide('rt_ext1_wpa_psk')"><i class="icon-eye-close"></i></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext1_closed" style="display:none;">
+                                            <th style="border-top: 0 none;"><#WLANConfig11b_x_BlockBCSSID_itemname#></th>
+                                            <td style="border-top: 0 none;">
+                                                <div class="main_itoggle">
+                                                    <div id="rt_ext1_closed_on_of">
+                                                        <input type="checkbox" id="rt_ext1_closed_fake" <% nvram_match_x("", "rt_ext1_closed", "1", "value=1 checked"); %><% nvram_match_x("", "rt_ext1_closed", "0", "value=0"); %>>
+                                                    </div>
+                                                </div>
+                                                <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" id="rt_ext1_closed_1" name="rt_ext1_closed" class="input" <% nvram_match_x("","rt_ext1_closed", "1", "checked"); %>><#checkbox_Yes#>
+                                                        <input type="radio" value="0" id="rt_ext1_closed_0" name="rt_ext1_closed" class="input" <% nvram_match_x("","rt_ext1_closed", "0", "checked"); %>><#checkbox_No#>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext1_isolate" style="display:none;">
+                                            <th style="border-top: 0 none;"><#WLANConfig11b_x_IsolateAP_itemname#></th>
+                                            <td style="border-top: 0 none;">
+                                                <div class="main_itoggle">
+                                                    <div id="rt_ext1_ap_isolate_on_of">
+                                                        <input type="checkbox" id="rt_ext1_ap_isolate_fake" <% nvram_match_x("", "rt_ext1_ap_isolate", "1", "value=1 checked"); %><% nvram_match_x("", "rt_ext1_ap_isolate", "0", "value=0"); %>>
+                                                    </div>
+                                                </div>
+                                                <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" id="rt_ext1_ap_isolate_1" name="rt_ext1_ap_isolate" class="input" <% nvram_match_x("","rt_ext1_ap_isolate", "1", "checked"); %>><#checkbox_Yes#>
+                                                        <input type="radio" value="0" id="rt_ext1_ap_isolate_0" name="rt_ext1_ap_isolate" class="input" <% nvram_match_x("","rt_ext1_ap_isolate", "0", "checked"); %>><#checkbox_No#>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th><#WLANExtSSID#> 2</th>
+                                            <td>
+                                                <div class="main_itoggle">
+                                                    <div id="rt_ext2_enable_on_of">
+                                                        <input type="checkbox" id="rt_ext2_enable_fake" <% nvram_match_x("", "rt_ext2_enable", "1", "value=1 checked"); %><% nvram_match_x("", "rt_ext2_enable", "0", "value=0"); %>>
+                                                    </div>
+                                                </div>
+                                                <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" id="rt_ext2_enable_1" name="rt_ext2_enable" class="input" <% nvram_match_x("","rt_ext2_enable", "1", "checked"); %>><#checkbox_Yes#>
+                                                        <input type="radio" value="0" id="rt_ext2_enable_0" name="rt_ext2_enable" class="input" <% nvram_match_x("","rt_ext2_enable", "0", "checked"); %>><#checkbox_No#>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext2_ssid" style="display:none;">
+                                            <th><#WLANConfig11b_SSID_itemname#></th>
+                                            <td><input type="text" maxlength="32" class="input" size="32" name="rt_ext2_ssid" value="" onkeypress="return is_string(this,event);"></td>
+                                        </tr>
+                                        <tr id="row_ext2_auth" style="display:none;">
+                                            <th><#WLANConfig11b_AuthenticationMethod_itemname#></th>
+                                            <td>
+                                                <select name="rt_ext2_auth_mode" class="input" onChange="change_ext_auth_mode(2);">
+                                                    <option value="open" <% nvram_match_x("", "rt_ext2_auth_mode", "open", "selected"); %>>Open System</option>
+                                                    <option value="psk" <% nvram_double_match_x("", "rt_ext2_auth_mode", "psk", "", "rt_ext2_wpa_mode", "2", "selected"); %>>WPA2-Personal (*)</option>
+                                                    <option value="psk" <% nvram_double_match_x("", "rt_ext2_auth_mode", "psk", "", "rt_ext2_wpa_mode", "1", "selected"); %>>WPA-Personal</option>
+                                                    <option value="psk" <% nvram_double_match_x("", "rt_ext2_auth_mode", "psk", "", "rt_ext2_wpa_mode", "0", "selected"); %>>WPA-Auto-Personal</option>
+                                                </select>
+                                                <input type="hidden" name="rt_ext2_wpa_mode" value="<% nvram_get_x("","rt_ext2_wpa_mode"); %>">
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext2_crypto" style="display:none;">
+                                            <th><#WLANConfig11b_WPAType_itemname#></th>
+                                            <td>
+                                                <select name="rt_ext2_crypto" class="input">
+                                                    <option value="aes" <% nvram_match_x("", "rt_ext2_crypto", "aes", "selected"); %>>AES</option>
+                                                    <option value="tkip+aes" <% nvram_match_x("", "rt_ext2_crypto", "tkip+aes", "selected"); %>>TKIP+AES</option>
+                                                </select>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext2_psk" style="display:none;">
+                                            <th><#WLANConfig11b_x_PSKKey_itemname#></th>
+                                            <td>
+                                                <div class="input-append">
+                                                    <input type="password" name="rt_ext2_wpa_psk" id="rt_ext2_wpa_psk" maxlength="64" size="32" value="" style="width: 175px;">
+                                                    <button style="margin-left: -5px;" class="btn" type="button" onclick="passwordShowHide('rt_ext2_wpa_psk')"><i class="icon-eye-close"></i></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext2_closed" style="display:none;">
+                                            <th style="border-top: 0 none;"><#WLANConfig11b_x_BlockBCSSID_itemname#></th>
+                                            <td style="border-top: 0 none;">
+                                                <div class="main_itoggle">
+                                                    <div id="rt_ext2_closed_on_of">
+                                                        <input type="checkbox" id="rt_ext2_closed_fake" <% nvram_match_x("", "rt_ext2_closed", "1", "value=1 checked"); %><% nvram_match_x("", "rt_ext2_closed", "0", "value=0"); %>>
+                                                    </div>
+                                                </div>
+                                                <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" id="rt_ext2_closed_1" name="rt_ext2_closed" class="input" <% nvram_match_x("","rt_ext2_closed", "1", "checked"); %>><#checkbox_Yes#>
+                                                        <input type="radio" value="0" id="rt_ext2_closed_0" name="rt_ext2_closed" class="input" <% nvram_match_x("","rt_ext2_closed", "0", "checked"); %>><#checkbox_No#>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext2_isolate" style="display:none;">
+                                            <th style="border-top: 0 none;"><#WLANConfig11b_x_IsolateAP_itemname#></th>
+                                            <td style="border-top: 0 none;">
+                                                <div class="main_itoggle">
+                                                    <div id="rt_ext2_ap_isolate_on_of">
+                                                        <input type="checkbox" id="rt_ext2_ap_isolate_fake" <% nvram_match_x("", "rt_ext2_ap_isolate", "1", "value=1 checked"); %><% nvram_match_x("", "rt_ext2_ap_isolate", "0", "value=0"); %>>
+                                                    </div>
+                                                </div>
+                                                <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" id="rt_ext2_ap_isolate_1" name="rt_ext2_ap_isolate" class="input" <% nvram_match_x("","rt_ext2_ap_isolate", "1", "checked"); %>><#checkbox_Yes#>
+                                                        <input type="radio" value="0" id="rt_ext2_ap_isolate_0" name="rt_ext2_ap_isolate" class="input" <% nvram_match_x("","rt_ext2_ap_isolate", "0", "checked"); %>><#checkbox_No#>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th><#WLANExtSSID#> 3</th>
+                                            <td>
+                                                <div class="main_itoggle">
+                                                    <div id="rt_ext3_enable_on_of">
+                                                        <input type="checkbox" id="rt_ext3_enable_fake" <% nvram_match_x("", "rt_ext3_enable", "1", "value=1 checked"); %><% nvram_match_x("", "rt_ext3_enable", "0", "value=0"); %>>
+                                                    </div>
+                                                </div>
+                                                <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" id="rt_ext3_enable_1" name="rt_ext3_enable" class="input" <% nvram_match_x("","rt_ext3_enable", "1", "checked"); %>><#checkbox_Yes#>
+                                                        <input type="radio" value="0" id="rt_ext3_enable_0" name="rt_ext3_enable" class="input" <% nvram_match_x("","rt_ext3_enable", "0", "checked"); %>><#checkbox_No#>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext3_ssid" style="display:none;">
+                                            <th><#WLANConfig11b_SSID_itemname#></th>
+                                            <td><input type="text" maxlength="32" class="input" size="32" name="rt_ext3_ssid" value="" onkeypress="return is_string(this,event);"></td>
+                                        </tr>
+                                        <tr id="row_ext3_auth" style="display:none;">
+                                            <th><#WLANConfig11b_AuthenticationMethod_itemname#></th>
+                                            <td>
+                                                <select name="rt_ext3_auth_mode" class="input" onChange="change_ext_auth_mode(3);">
+                                                    <option value="open" <% nvram_match_x("", "rt_ext3_auth_mode", "open", "selected"); %>>Open System</option>
+                                                    <option value="psk" <% nvram_double_match_x("", "rt_ext3_auth_mode", "psk", "", "rt_ext3_wpa_mode", "2", "selected"); %>>WPA2-Personal (*)</option>
+                                                    <option value="psk" <% nvram_double_match_x("", "rt_ext3_auth_mode", "psk", "", "rt_ext3_wpa_mode", "1", "selected"); %>>WPA-Personal</option>
+                                                    <option value="psk" <% nvram_double_match_x("", "rt_ext3_auth_mode", "psk", "", "rt_ext3_wpa_mode", "0", "selected"); %>>WPA-Auto-Personal</option>
+                                                </select>
+                                                <input type="hidden" name="rt_ext3_wpa_mode" value="<% nvram_get_x("","rt_ext3_wpa_mode"); %>">
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext3_crypto" style="display:none;">
+                                            <th><#WLANConfig11b_WPAType_itemname#></th>
+                                            <td>
+                                                <select name="rt_ext3_crypto" class="input">
+                                                    <option value="aes" <% nvram_match_x("", "rt_ext3_crypto", "aes", "selected"); %>>AES</option>
+                                                    <option value="tkip+aes" <% nvram_match_x("", "rt_ext3_crypto", "tkip+aes", "selected"); %>>TKIP+AES</option>
+                                                </select>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext3_psk" style="display:none;">
+                                            <th><#WLANConfig11b_x_PSKKey_itemname#></th>
+                                            <td>
+                                                <div class="input-append">
+                                                    <input type="password" name="rt_ext3_wpa_psk" id="rt_ext3_wpa_psk" maxlength="64" size="32" value="" style="width: 175px;">
+                                                    <button style="margin-left: -5px;" class="btn" type="button" onclick="passwordShowHide('rt_ext3_wpa_psk')"><i class="icon-eye-close"></i></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext3_closed" style="display:none;">
+                                            <th style="border-top: 0 none;"><#WLANConfig11b_x_BlockBCSSID_itemname#></th>
+                                            <td style="border-top: 0 none;">
+                                                <div class="main_itoggle">
+                                                    <div id="rt_ext3_closed_on_of">
+                                                        <input type="checkbox" id="rt_ext3_closed_fake" <% nvram_match_x("", "rt_ext3_closed", "1", "value=1 checked"); %><% nvram_match_x("", "rt_ext3_closed", "0", "value=0"); %>>
+                                                    </div>
+                                                </div>
+                                                <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" id="rt_ext3_closed_1" name="rt_ext3_closed" class="input" <% nvram_match_x("","rt_ext3_closed", "1", "checked"); %>><#checkbox_Yes#>
+                                                        <input type="radio" value="0" id="rt_ext3_closed_0" name="rt_ext3_closed" class="input" <% nvram_match_x("","rt_ext3_closed", "0", "checked"); %>><#checkbox_No#>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_ext3_isolate" style="display:none;">
+                                            <th style="border-top: 0 none;"><#WLANConfig11b_x_IsolateAP_itemname#></th>
+                                            <td style="border-top: 0 none;">
+                                                <div class="main_itoggle">
+                                                    <div id="rt_ext3_ap_isolate_on_of">
+                                                        <input type="checkbox" id="rt_ext3_ap_isolate_fake" <% nvram_match_x("", "rt_ext3_ap_isolate", "1", "value=1 checked"); %><% nvram_match_x("", "rt_ext3_ap_isolate", "0", "value=0"); %>>
+                                                    </div>
+                                                </div>
+                                                <div style="position: absolute; margin-left: -10000px;">
+                                                        <input type="radio" value="1" id="rt_ext3_ap_isolate_1" name="rt_ext3_ap_isolate" class="input" <% nvram_match_x("","rt_ext3_ap_isolate", "1", "checked"); %>><#checkbox_Yes#>
+                                                        <input type="radio" value="0" id="rt_ext3_ap_isolate_0" name="rt_ext3_ap_isolate" class="input" <% nvram_match_x("","rt_ext3_ap_isolate", "0", "checked"); %>><#checkbox_No#>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </table>
                                     <table class="table">
                                         <tr>
                                             <td id="col_goto5" width="50%" style="margin-top: 10px; border-top: 0 none;">

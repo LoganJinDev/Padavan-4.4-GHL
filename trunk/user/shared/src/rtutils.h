@@ -29,4 +29,11 @@ extern void  nvram_wlan_set_int(int is_aband, const char *param, int value);
 extern char* nvram_wlan_get(int is_aband, const char *param);
 extern int   nvram_wlan_get_int(int is_aband, const char *param);
 
+/* 额外 SSID 槽（idx 取 1..3，对应 nvram 键 ext1_* / ext2_* / ext3_*）
+ * 返回值指向 nvram 静态轮转缓存，须立即使用或拷贝，不可跨次调用持有 */
+extern char* nvram_wlan_get_ext(int is_aband, int idx, const char *param);
+extern int   nvram_wlan_get_ext_int(int is_aband, int idx, const char *param);
+/* 额外 SSID 槽是否应生效：启用 且 SSID 名非空 且（非开放网络时）密码长度 >= 8 */
+extern int   is_ext_allowed(int is_aband, int idx);
+
 #endif

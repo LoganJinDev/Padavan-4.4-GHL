@@ -2039,3 +2039,5 @@ pppoemwan1=Intranet IP flow control
 pppoemwan1_1=Export serial number(1 Start)
 pppoemwan0=Disable 443 load balancing（Avoid affecting web browsing, which may affect speed testing）
 AP_Relay=AP Relay (Automatic Search Switching Channel Signal) [Click to Open Configuration Script]
+WLANExtSSID=Extra SSID
+WLANExtSSIDNote=Note: Saving this page briefly interrupts every SSID on this band for a few seconds. An enabled slot needs an SSID name and, unless it is an open network, a password of at least 8 characters.

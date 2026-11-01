@@ -357,3 +357,65 @@ nvram_wlan_get_int(int is_aband, const char *param)
 		return atoi(value);
 	return 0;
 }
+
+/* 组装额外 SSID 槽的 nvram 键名（形如 ext1_ssid） */
+static void
+ext_key(int idx, const char *param, char *out, size_t sz)
+{
+	snprintf(out, sz, "ext%d_%s", idx, param);
+}
+
+char*
+nvram_wlan_get_ext(int is_aband, int idx, const char *param)
+{
+	char key[32];
+
+	ext_key(idx, param, key, sizeof(key));
+	return nvram_wlan_get(is_aband, key);
+}
+
+int
+nvram_wlan_get_ext_int(int is_aband, int idx, const char *param)
+{
+	char key[32];
+	char *value;
+
+	ext_key(idx, param, key, sizeof(key));
+	value = nvram_wlan_get(is_aband, key);
+	if (value)
+		return atoi(value);
+	return 0;
+}
+
+int
+is_ext_allowed(int is_aband, int idx)
+{
+	char key[32];
+	char ssid[64], auth[16], psk[128];
+	char *value;
+
+	ext_key(idx, "enable", key, sizeof(key));
+	if (!nvram_wlan_get_int(is_aband, key))
+		return 0;
+
+	/* nvram 取值走静态轮转缓存，每次取完必须立刻拷贝 */
+	ext_key(idx, "ssid", key, sizeof(key));
+	value = nvram_wlan_get(is_aband, key);
+	snprintf(ssid, sizeof(ssid), "%s", (value != NULL) ? value : "");
+	if (ssid[0] == '\0')
+		return 0;	/* SSID 为空则不能广播（会发出空 SSID 信标） */
+
+	ext_key(idx, "auth_mode", key, sizeof(key));
+	value = nvram_wlan_get(is_aband, key);
+	snprintf(auth, sizeof(auth), "%s", (value != NULL) ? value : "");
+	if (!strcmp(auth, "open"))
+		return 1;	/* 开放网络不需要密码 */
+
+	ext_key(idx, "wpa_psk", key, sizeof(key));
+	value = nvram_wlan_get(is_aband, key);
+	snprintf(psk, sizeof(psk), "%s", (value != NULL) ? value : "");
+	if (strlen(psk) < 8)
+		return 0;	/* WPA-PSK 最短 8 位，过短驱动会拒绝该槽 */
+
+	return 1;
+}

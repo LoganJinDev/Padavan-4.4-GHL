@@ -562,19 +562,47 @@ symlink_sku_file(const char *sku_file, const char *prefix, const char *cc, int r
 		symlink(sku_link, sku_file);
 }
 
+/* 把 n 个整数以分号连接写入 buf（Padavan MBSSID 型参数格式：v0;v1;...;vn-1） */
+static void
+mbss_join_int(char *buf, size_t sz, const int *v, int n)
+{
+	int i;
+
+	buf[0] = '\0';
+	for (i = 0; i < n; i++)
+		snprintf(buf + strlen(buf), sz - strlen(buf), "%d;", v[i]);
+	if (buf[0] != '\0')
+		buf[strlen(buf) - 1] = '\0';
+}
+
+/* 把 n 个字符串以分号连接写入 buf */
+static void
+mbss_join_str(char *buf, size_t sz, const char *const *v, int n)
+{
+	int i;
+
+	buf[0] = '\0';
+	for (i = 0; i < n; i++)
+		snprintf(buf + strlen(buf), sz - strlen(buf), "%s;",
+			(v[i] != NULL) ? v[i] : "");
+	if (buf[0] != '\0')
+		buf[strlen(buf) - 1] = '\0';
+}
+
 static int
 gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 {
 	FILE *fp;
-	char list[2048], *p_str, *c_val_mbss[2];
+	char list[2048], *p_str, *c_val_mbss[5];
+	char mbss_buf[512];
 	int i_pmfr, i_pmfsha256;
 	int i, i_num,  i_val, i_wmm, i_ldpc, i_stbc;
 	int i_mode_x, i_phy_mode, i_gfe, i_auth, i_encr, i_wep, i_wds;
 	int i_ssid_num, i_channel, i_channel_max, i_HTBW_MAX;
-	int i_stream_tx, i_stream_rx, i_mphy, i_mmcs, i_fphy[2], i_val_mbss[2];
+	int i_stream_tx, i_stream_rx, i_mphy, i_mmcs, i_fphy[2], i_val_mbss[5];
 	const char *dat_file, *sku_file, *prefix = (is_aband) ? "wl" : "rt";
 
-	i_ssid_num = 2; // AP+GuestAP
+	i_ssid_num = 5; // AP+GuestAP+3个额外SSID槽（ext1..ext3）
 	i_channel_max = 13;
 
 	if (is_soc_ap) {
@@ -660,7 +688,9 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 	//SSID
 	fprintf(fp, "SSID%d=%s\n", 1, nvram_wlan_get(is_aband, "ssid"));
 	fprintf(fp, "SSID%d=%s\n", 2, nvram_wlan_get(is_aband, "guest_ssid"));
-	for (i = 3; i <= 8; i++)
+	for (i = 1; i <= 3; i++)
+		fprintf(fp, "SSID%d=%s\n", i + 2, nvram_wlan_get_ext(is_aband, i, "ssid"));
+	for (i = 6; i <= 8; i++)
 		fprintf(fp, "SSID%d=%s\n", i, "");
 
 	//Network Mode
@@ -902,7 +932,10 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 
 	//WmmCapable (MBSSID used)
 	i_wmm = nvram_wlan_get_int(is_aband, "wme");
-	fprintf(fp, "WmmCapable=%d;%d\n", i_wmm, i_wmm);
+	for (i = 0; i < i_ssid_num; i++)
+		i_val_mbss[i] = i_wmm;
+	mbss_join_int(mbss_buf, sizeof(mbss_buf), i_val_mbss, i_ssid_num);
+	fprintf(fp, "WmmCapable=%s\n", mbss_buf);
 
 	fprintf(fp, "APAifsn=3;7;1;1\n");
 	fprintf(fp, "APCwmin=4;4;3;2\n");
@@ -941,15 +974,21 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 	fprintf(fp, "UAPSDCapable=%d\n", i_val);
 
 	//DLSCapable (MBSSID used)
-	fprintf(fp, "DLSCapable=%d;%d\n", 0, 0);
+	for (i = 0; i < i_ssid_num; i++)
+		i_val_mbss[i] = 0;
+	mbss_join_int(mbss_buf, sizeof(mbss_buf), i_val_mbss, i_ssid_num);
+	fprintf(fp, "DLSCapable=%s\n", mbss_buf);
 
 	//NoForwarding (MBSSID used)
 	i_val_mbss[0] = nvram_wlan_get_int(is_aband, "ap_isolate");
 	i_val_mbss[1] = nvram_wlan_get_int(is_aband, "guest_ap_isolate");
-	fprintf(fp, "NoForwarding=%d;%d\n", i_val_mbss[0], i_val_mbss[1]);
+	for (i = 1; i <= 3; i++)
+		i_val_mbss[i + 1] = nvram_wlan_get_ext_int(is_aband, i, "ap_isolate");
+	mbss_join_int(mbss_buf, sizeof(mbss_buf), i_val_mbss, i_ssid_num);
+	fprintf(fp, "NoForwarding=%s\n", mbss_buf);
 
 	//NoForwardingMBCast (MBSSID used)
-	fprintf(fp, "NoForwardingMBCast=%d;%d\n", i_val_mbss[0], i_val_mbss[1]);
+	fprintf(fp, "NoForwardingMBCast=%s\n", mbss_buf);
 
 	//NoForwardingBTNBSSID
 #if defined(BOARD_MT7615_DBDC) || defined (BOARD_MT7915_DBDC)
@@ -963,7 +1002,10 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 	//HideSSID (MBSSID used)
 	i_val_mbss[0] = nvram_wlan_get_int(is_aband, "closed");
 	i_val_mbss[1] = nvram_wlan_get_int(is_aband, "guest_closed");
-	fprintf(fp, "HideSSID=%d;%d\n", i_val_mbss[0], i_val_mbss[1]);
+	for (i = 1; i <= 3; i++)
+		i_val_mbss[i + 1] = nvram_wlan_get_ext_int(is_aband, i, "closed");
+	mbss_join_int(mbss_buf, sizeof(mbss_buf), i_val_mbss, i_ssid_num);
+	fprintf(fp, "HideSSID=%s\n", mbss_buf);
 
 	//ShortSlot
 	fprintf(fp, "ShortSlot=%d\n", 1);
@@ -993,7 +1035,10 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 #endif
 	}
 	fprintf(fp, "RDRegion=%s\n", "FCC"); // used for Radar Detection
-	fprintf(fp, "StationKeepAlive=%d;%d\n", 0, 0);
+	for (i = 0; i < i_ssid_num; i++)
+		i_val_mbss[i] = 0;
+	mbss_join_int(mbss_buf, sizeof(mbss_buf), i_val_mbss, i_ssid_num);
+	fprintf(fp, "StationKeepAlive=%s\n", mbss_buf);
 	fprintf(fp, "DfsLowerLimit=%d\n", 0);
 	fprintf(fp, "DfsUpperLimit=%d\n", 0);
 	fprintf(fp, "DfsIndoor=%d\n", 0);
@@ -1029,8 +1074,8 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 
 	//AuthMode (MBSSID used)
 	i_auth = 0; // Open
-	c_val_mbss[0] = "OPEN";
-	c_val_mbss[1] = "OPEN";
+	for (i = 0; i < i_ssid_num; i++)
+		c_val_mbss[i] = "OPEN";
 	i_val = nvram_wlan_get_int(is_aband, "wpa_mode");
 	p_str = nvram_wlan_get(is_aband, "auth_mode");
 	if (!strcmp(p_str, "shared"))
@@ -1082,12 +1127,29 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 		else
 			c_val_mbss[1] = "WPAPSKWPA2PSK";
 	}
-	fprintf(fp, "AuthMode=%s;%s\n", c_val_mbss[0], c_val_mbss[1]);
+
+	// 额外 SSID 槽（ext1..ext3）：psk 时按 ext<N>_wpa_mode 细分，其余保持 OPEN
+	for (i = 1; i <= 3; i++)
+	{
+		p_str = nvram_wlan_get_ext(is_aband, i, "auth_mode");
+		if (!strcmp(p_str, "psk"))
+		{
+			i_val = nvram_wlan_get_ext_int(is_aband, i, "wpa_mode");
+			if (i_val == 1)
+				c_val_mbss[i + 1] = "WPAPSK";
+			else if (i_val == 2)
+				c_val_mbss[i + 1] = "WPA2PSK";
+			else
+				c_val_mbss[i + 1] = "WPAPSKWPA2PSK";
+		}
+	}
+	mbss_join_str(mbss_buf, sizeof(mbss_buf), (const char *const *)c_val_mbss, i_ssid_num);
+	fprintf(fp, "AuthMode=%s\n", mbss_buf);
 
 	//EncrypType (MBSSID used)
 	i_encr = 0;  // None
-	c_val_mbss[0] = "NONE";
-	c_val_mbss[1] = "NONE";
+	for (i = 0; i < i_ssid_num; i++)
+		c_val_mbss[i] = "NONE";
 	i_wep = nvram_wlan_get_int(is_aband, "wep_x");
 	if ((i_auth == 0 && i_wep != 0) || i_auth == 1 || i_auth == 8) {
 		i_encr = 1;  // WEP
@@ -1115,7 +1177,24 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 		else if (!strcmp(p_str, "tkip+aes"))
 			c_val_mbss[1] = "TKIPAES";
 	}
-	fprintf(fp, "EncrypType=%s;%s\n", c_val_mbss[0], c_val_mbss[1]);
+
+	// 额外 SSID 槽：加密方式逐槽独立
+	for (i = 1; i <= 3; i++)
+	{
+		p_str = nvram_wlan_get_ext(is_aband, i, "auth_mode");
+		if (!strcmp(p_str, "psk"))
+		{
+			p_str = nvram_wlan_get_ext(is_aband, i, "crypto");
+			if (!strcmp(p_str, "tkip"))
+				c_val_mbss[i + 1] = "TKIP";
+			else if (!strcmp(p_str, "aes"))
+				c_val_mbss[i + 1] = "AES";
+			else if (!strcmp(p_str, "tkip+aes"))
+				c_val_mbss[i + 1] = "TKIPAES";
+		}
+	}
+	mbss_join_str(mbss_buf, sizeof(mbss_buf), (const char *const *)c_val_mbss, i_ssid_num);
+	fprintf(fp, "EncrypType=%s\n", mbss_buf);
 
 	//Wapi
 	for (i = 1; i <= 8; i++)
@@ -1150,7 +1229,9 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 	//WPAPSK
 	fprintf(fp, "WPAPSK%d=%s\n", 1, nvram_wlan_get(is_aband, "wpa_psk"));
 	fprintf(fp, "WPAPSK%d=%s\n", 2, nvram_wlan_get(is_aband, "guest_wpa_psk"));
-	for (i = 3; i <= 8; i++)
+	for (i = 1; i <= 3; i++)
+		fprintf(fp, "WPAPSK%d=%s\n", i + 2, nvram_wlan_get_ext(is_aband, i, "wpa_psk"));
+	for (i = 6; i <= 8; i++)
 		fprintf(fp, "WPAPSK%d=%s\n", i, "");
 
 	//DefaultKeyID
@@ -1340,10 +1421,15 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 	i_fphy[1] = calc_fixed_tx_mode(nvram_wlan_get_int(is_aband, "guest_mcs_mode"), is_aband, i_phy_mode, &i_val_mbss[1]);
 
 	//FixedTxMode (MBSSID used)
-	fprintf(fp, "FixedTxMode=%d;%d\n", i_fphy[0], i_fphy[1]);
+	//额外槽必须显式给值：驱动按 MAX_MBSSID_NUM 循环读分号令牌，
+	//令牌耗尽即停，未赋值槽会保留 0，而 MCS=0 ≠ MCS_AUTO(33)
+	//会在 ap_assoc.c 走 set_ht_fixed_mcs 把该槽钉死到 MCS0。故取主 SSID 同值。
+	fprintf(fp, "FixedTxMode=%d;%d;%d;%d;%d\n", i_fphy[0], i_fphy[1],
+		i_fphy[0], i_fphy[0], i_fphy[0]);
 
 	//HT_MCS (MBSSID used), force AUTO for Main
-	fprintf(fp, "HT_MCS=%d;%d\n", i_val_mbss[0], i_val_mbss[1]);
+	fprintf(fp, "HT_MCS=%d;%d;%d;%d;%d\n", i_val_mbss[0], i_val_mbss[1],
+		i_val_mbss[0], i_val_mbss[0], i_val_mbss[0]);
 
 	//HT_TxStream
 	fprintf(fp, "HT_TxStream=%d\n", i_stream_tx);
