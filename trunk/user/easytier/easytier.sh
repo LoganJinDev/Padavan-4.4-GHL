@@ -96,6 +96,40 @@ et_resolve_bins() {
 	fi
 }
 
+# ---------------------------------------------------------------------------
+# 下载锁
+# ---------------------------------------------------------------------------
+# ★ 为什么需要：cron 保活每分钟起一个新进程，busybox crond 不做互斥；
+#   而 easytier_download.sh 会无条件 `rm -rf` 暂存目录 ⇒ 两个实例并发会互相
+#   踩掉对方的暂存目录，双双失败。锁把并发收敛成一个。
+# ★ 锁是【目录】：同一文件系统上 mkdir 原子，比「先判断再创建」可靠。
+#   目录内不写任何文件 ⇒ 释放用 rmdir；/tmp 是 tmpfs，重启即清。
+# ★ ET_DL_LOCK 还有第三个读者：easytier_state() 见到锁目录就报「下载中…」
+#   ⇒ 残锁不清理会让 Web UI 永远卡在这个状态。
+
+# 残锁清理：持锁进程被 kill（或掉电）会留下没人摘的锁目录。
+# 下载 8.94 MiB 正常不超过 10 分钟 ⇒ 锁目录 mtime 超 10 分钟即视为死锁。
+# ★ 已真机成对对照验证 busybox find 的 -maxdepth / -mmin 有判别力
+#   （造旧 mtime 要用 touch -t，busybox 的 touch 不支持 -d）。
+# ★ 故意不写 2>/dev/null：开机窗口内 /dev/null 可能尚不存在，
+#   那会让整条命令【不执行】而不是只吞掉报错。前置 [ -d ] 已足够。
+et_dl_lock_stale_clean() {
+	[ -d "$ET_DL_LOCK" ] || return 0
+	[ -n "$(find "$ET_DL_LOCK" -maxdepth 0 -mmin +10)" ] && rmdir "$ET_DL_LOCK"
+	return 0
+}
+
+# 抢锁。成功返回 0，已被占用返回 1。
+et_dl_lock_acquire() {
+	et_dl_lock_stale_clean
+	mkdir "$ET_DL_LOCK" 2>/dev/null
+}
+
+# 放锁。
+et_dl_lock_release() {
+	rmdir "$ET_DL_LOCK" 2>/dev/null
+}
+
 # 一次性把 nvram 读进变量，避免后面反复调用 nvram
 et_load_cfg() {
 	et_resolve_bins
@@ -157,9 +191,13 @@ et_cron_file() {
 
 # 安装保活 cron。先删自己的行再加，保证幂等。
 # ★ 匹配关键字用 easytier，与 frp.sh 的 '/frp/d' 互不误删。
+# ★★ 这里【不能】加 `[ -f "$_cron" ] || return 0` 守卫。
+#   本机型（CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT=n）开机路径上没有任何东西
+#   会创建 crontab 文件（check_crontab.sh 被 #if APP_SCUT 条件编译吃掉），
+#   而 `>>` 本来就会自建文件 —— 加守卫等于把「首次使用」这个必经场景
+#   变成静默 return 0（成功），cron 永远装不上。对齐 frp.sh / adbyby.sh 的写法。
 et_install_cron() {
 	_cron=$(et_cron_file)
-	[ -f "$_cron" ] || return 0
 	sed -i '/easytier/d' "$_cron"
 	echo "*/1 * * * * /bin/sh $ET_SELF C >/dev/null 2>&1" >> "$_cron"
 }
@@ -253,8 +291,16 @@ easytier_start() {
 	# 二进制不存在就尝试下载（固件内未编译二进制时走这条路）
 	if [ ! -x "$ET_CORE" ]; then
 		if [ -x "$ET_DL" ]; then
-			et_log "未找到 $ET_CORE，尝试下载"
-			"$ET_DL" download
+			# ★ 必须抢锁：cron 每分钟起一个新进程，而下载会 rm -rf 暂存目录，
+			#   两个实例并发会互相踩掉、双双失败。抢不到就等下一分钟再试。
+			if et_dl_lock_acquire; then
+				et_log "未找到 $ET_CORE，尝试下载"
+				"$ET_DL" download
+				et_dl_lock_release
+			else
+				et_log "已有下载任务在进行，本轮跳过启动"
+				return 1
+			fi
 		fi
 	fi
 	if [ ! -x "$ET_CORE" ]; then
@@ -416,12 +462,12 @@ easytier_dl() {
 		return 0
 	fi
 
-	if ! mkdir "$ET_DL_LOCK" 2>/dev/null; then
+	if ! et_dl_lock_acquire; then
 		et_state_echo "已有下载任务在进行，完成后点「刷新状态」"
 		return 0
 	fi
 
-	( "$ET_DL" download >/dev/null 2>&1; rmdir "$ET_DL_LOCK" 2>/dev/null ) &
+	( "$ET_DL" download >/dev/null 2>&1; et_dl_lock_release ) &
 
 	et_state_echo "已开始后台下载（约 8.9 MiB），完成后点「刷新状态」"
 }

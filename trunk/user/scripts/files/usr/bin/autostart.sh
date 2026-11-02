@@ -120,3 +120,8 @@ if [ $(nvram get frpc_enable) = 1 ] ; then
 logger -t "自动启动" "正在启动 frp client..."
 /usr/bin/frp.sh start
 fi
+
+if [ $(nvram get easytier_enable) = 1 ] ; then
+logger -t "自动启动" "正在启动 easytier..."
+/usr/bin/easytier.sh start
+fi

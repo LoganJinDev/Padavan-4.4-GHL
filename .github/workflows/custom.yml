@@ -295,6 +295,33 @@ jobs:
           path: trunk/download
           key: padavan-download-${{ runner.os }}-${{ github.run_id }}
 
+
+      # ★ 为什么要 prune：key 带 ${{ github.run_id }} ⇒ 每轮新增一份（实测 86 MB）。
+      #   仓库缓存上限 10 GB，约 100 轮后开始挤掉 ccache（136 MB×多份，那才是真正省时间的）。
+      # ★ 为什么不改成内容哈希 key：actions/cache 写入后【不可变】⇒ 同 key 二次 save 会失败
+      #   ⇒ 某次不完整的缓存被永久冻结，正是 restore/save 拆分要避免的那种死锁。
+      #   滚动 key + prune 是唯一正确解。
+      # ★ REST 的 ?key= 是【前缀】匹配（gh cache list --key 是精确匹配，不适用）。
+      # ★ --paginate 与 --jq 同时用时 jq 是【按页】执行的 ⇒ 排序只在页内有效；
+      #   per_page=100 让单页覆盖足够轮次（每轮 1 份，100 轮内无虞）。
+      - name: Prune old download caches
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 保留最近 2 份 padavan-download-*，其余删除。
+          # 留 2 份而非 1 份：restore-keys 前缀命中最近一份，冗余一份防"最近那份恰好是空包"
+          # （run 41380914553 的 191 B 空包就是先例）。
+          ids=$(gh api --paginate \
+            "/repos/${{ github.repository }}/actions/caches?key=padavan-download&per_page=100" \
+            --jq '.actions_caches | sort_by(.created_at) | reverse | .[2:] | .[].id' \
+            2>/dev/null || true)
+          echo "将删除的缓存 id: ${ids:-（无）}"
+          for id in $ids; do
+            gh api -X DELETE "/repos/${{ github.repository }}/actions/caches/$id" >/dev/null 2>&1 || true
+          done
+
       - uses: actions/upload-artifact@main
         with:
           name: ${{ inputs.target }}-${{ inputs.toolchain }}-${{ env.BUILD_DATE }}
