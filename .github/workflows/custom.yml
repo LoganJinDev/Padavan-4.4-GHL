@@ -229,6 +229,19 @@ jobs:
             sed -i "s/CONFIG_FIRMWARE_INCLUDE_${m}=y/CONFIG_FIRMWARE_INCLUDE_${m}=n/" "$CONFIGFILE"
           done
 
+      # 缓存第三方源码包目录 trunk/download，绕开上游单点（典型：udns 唯一源 corpit.ru）
+      # 机理：trunk/include/download.mk 里 "$(DL_DIR)/$(FILE):" 这条规则【没有前置依赖】，
+      #       只要目标文件已存在，make 就整个跳过下载配方、根本不访问上游 ⇒ 缓存即根治。
+      # 注：actions/cache 写入后不可变，故用「滚动缓存」——key 带 run_id 保证每轮另存一份新的，
+      #     restore-keys 前缀命中最近一份，避免某次不完整的缓存被永久冻结住。
+      - name: Cache third-party downloads
+        uses: actions/cache@v4
+        with:
+          path: trunk/download
+          key: padavan-download-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            padavan-download-${{ runner.os }}-
+
       - name: Build Firmware
         run: |
           make ${{ inputs.target }} TOOLCHAIN=${{ inputs.toolchain }}
