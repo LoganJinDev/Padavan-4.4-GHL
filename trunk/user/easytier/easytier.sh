@@ -345,21 +345,27 @@ et_check_net() {
 #
 # 返回 0 = 健康 / 未启用 / 未到检测时刻（调用方继续）
 # 返回 1 = 判定不通且已达重启阈值（调用方负责 stop）
+# ★ 返回码只表达「决策」，不表达「观测」。本次为何是这个返回值写在全局变量
+#   ET_CKREASON 里（ok/noip/net/wait/fail1/threshold/disabled），供调用方区分。
 et_check_link() {
-	[ "$ET_CHKEN" = "1" ] || return 0
-	[ -n "$ET_CHKIP" ] || return 0
+	# ★ 把「本次为何是这个返回值」通过变量吐给调用方。
+	#   返回码只表达「是否已达重启阈值」，拿它当观测会把探测失败报成正常
+	#   （见 link 子命令）。调用方不读也无副作用。
+	ET_CKREASON=""
+	[ "$ET_CHKEN" = "1" ] || { ET_CKREASON=disabled; return 0; }
+	[ -n "$ET_CHKIP" ] || { ET_CKREASON=noip; return 0; }
 
 	# 时间闸门：cron 每分钟一跳，而检测周期是分钟级 ⇒ 自己记上次检测时刻。
 	# /tmp 是 tmpfs，重启后标记消失 ⇒ 开机第一跳就会检测一次（期望行为）。
 	_ck_now=$(date +%s)
 	_ck_last=$(cat "$ET_CHKTS" 2>/dev/null)
 	case "$_ck_last" in ''|*[!0-9]*) _ck_last=0 ;; esac
-	[ $((_ck_now - _ck_last)) -ge $((ET_CHKTIME * 60)) ] || return 0
+	[ $((_ck_now - _ck_last)) -ge $((ET_CHKTIME * 60)) ] || { ET_CKREASON=wait; return 0; }
 	echo "$_ck_now" > "$ET_CHKTS"
 
 	# ★ 外网本身不通就直接跳过 —— 这正是上游那个 223.5.5.5 预检的作用。
 	#   没有它，宽带掉线会被误判成「隧道故障」，变成无限重启。
-	et_check_net || return 0
+	et_check_net || { ET_CKREASON=net; return 0; }
 
 	_ck_ok=""
 	_ck_ms=""
@@ -384,6 +390,7 @@ et_check_link() {
 			et_log "$_ck_msg）"
 		fi
 		rm -f "$ET_CHKFAIL"
+		ET_CKREASON=ok
 		return 0
 	fi
 
@@ -395,10 +402,16 @@ et_check_link() {
 
 	if [ "$_ck_n" -lt 2 ]; then
 		et_log "通断检测：$ET_CHKIP 全部不可达（第 $_ck_n 轮，未达重启阈值）"
+		ET_CKREASON=fail1
 		return 0
 	fi
 
-	et_log "通断检测：$ET_CHKIP 连续 $_ck_n 轮全部不可达，重启 easytier-core"
+	# ★ 这里只报「观测到的事实」；「要做什么」由调用方报 ——
+	#   easytier_check 会自己打「隧道不通，重启 easytier-core」。
+	#   原先这里自带「重启 easytier-core」：在 cron 路径上与调用方重复，
+	#   在 link 路径上（根本不重启）则是误导。
+	et_log "通断检测：$ET_CHKIP 连续 $_ck_n 轮全部不可达"
+	ET_CKREASON=threshold
 	rm -f "$ET_CHKFAIL"
 	return 1
 }
@@ -909,7 +922,17 @@ case "$1" in
 		if [ "$ET_CHKEN" != "1" ]; then
 			echo "通断检测未启用（easytier_check_enable=$ET_CHKEN）"
 		elif et_check_link; then
-			echo "通断检测：正常"
+			# ★ 返回 0 有六种含义（正常 / 未启用 / 未配 IP / 未到时刻 /
+			#   外网不通 / 第 1 轮不通），只看返回码必然把失败报成「正常」。
+			#   （link 已把 ET_CHKTIME 置 0，故 wait 不会出现；ET_CHKEN 已在
+			#   上面查过，故 disabled 也不会出现 —— 两者由 * 兜底。）
+			case "$ET_CKREASON" in
+				ok)    echo "通断检测：正常" ;;
+				noip)  echo "通断检测：未配置检测目标（easytier_check_ip 为空）" ;;
+				net)   echo "通断检测：外网不可达，本轮跳过（不计失败）" ;;
+				fail1) echo "通断检测：$ET_CHKIP 本轮全部不可达（第 $(cat "$ET_CHKFAIL" 2>/dev/null) 轮，未达重启阈值）" ;;
+				*)     echo "通断检测：本轮未执行检测（$ET_CKREASON）" ;;
+			esac
 		else
 			echo "通断检测：$ET_CHKIP 全部不可达，判定不通"
 		fi
