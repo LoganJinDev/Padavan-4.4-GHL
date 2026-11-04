@@ -747,13 +747,33 @@ et_state_echo() {
 #   8.94 MiB 的下载（慢的时候好几分钟）会把 httpd 卡死在那里。
 # ★ 互斥用 mkdir：同一文件系统上 mkdir 是原子的，比「先判断再创建」可靠。
 #   锁由后台子 shell 在下载器退出后摘掉；/tmp 是 tmpfs，重启即清。
+# 当前在用那份二进制的版本号；取不到就打空（界面据此省掉版本括号）。
+# ★ 分派规则只有一条：内置那份的版本是固件钉死的（defver），/tmp 那份是实际
+#   装上的（curver）。两个值都由 easytier_download.sh 单点提供，这里一个版本
+#   常量都不留 —— 留一份就迟早和固件里那份悄悄不一致。
+et_bin_ver() {
+	[ -x "$ET_DL" ] || return 0
+	if [ "$ET_CORE" = "$ET_SYS_CORE" ]; then
+		"$ET_DL" defver 2>/dev/null
+	else
+		"$ET_DL" curver 2>/dev/null
+	fi
+}
+
 easytier_dl() {
 	et_resolve_bins
 
-	# 固件已内置 ⇒ 没什么可下的。说清楚，别让用户等一个永远不来的下载。
-	if [ -x "$ET_SYS_CORE" ]; then
-		et_state_echo "固件已内置二进制，无需下载"
-		return 0
+	# 要不要下？交给 easytier_download.sh 的 needdl 判定，别在这里复制条件。
+	# ★★ 这里曾经写死 `[ -x "$ET_SYS_CORE" ]` ⇒ 大闪存机型（二进制编进固件）上
+	#   无条件早返回「无需下载」，于是用户在界面上选了别的版本、点了下载，
+	#   什么也没发生，且零报错。版本判断只在 download.sh 里有一份，它一变
+	#   这里就必须跟着变 ⇒ 那就只能去问它，不能自己抄一遍。
+	if [ -x "$ET_DL" ]; then
+		_ndr=$("$ET_DL" needdl 2>/dev/null)
+		if [ $? -ne 0 ]; then
+			et_state_echo "${_ndr:-无需下载}"
+			return 0
+		fi
 	fi
 
 	if ! et_dl_lock_acquire; then
@@ -790,7 +810,11 @@ easytier_state() {
 	if [ ! -f "$ET_CORE" ] && [ ! -f "$ET_CLI" ]; then
 		_bin="二进制缺失，点「下载 / 校验二进制」"
 	elif [ -x "$ET_DL" ] && "$ET_DL" check "$ET_CORE" "$ET_CLI" >/dev/null 2>&1; then
-		_bin="二进制就绪（$_where）"
+		# ★ 带上实际版本号：task 3 之后版本是可选的，界面只报「就绪」等于
+		#   把「装的是哪个版本」这条最关键的信息藏起来。
+		#   `${_ver:+ ...}`：取不到版本就退回原样，不留一个空的括号。
+		_ver=$(et_bin_ver)
+		_bin="二进制就绪（$_where${_ver:+ $_ver}）"
 	else
 		_bin="二进制校验不通过，可能下载不完整，请重新下载"
 	fi
@@ -807,7 +831,9 @@ easytier_state() {
 # ★ 只读、同步。走 SystemCmd 通道 ⇒ httpd 是单进程 select 循环、doSystem 阻塞，
 #   这次请求会一直等到命令跑完才返回 ⇒ 界面不需要轮询。也正因为会阻塞 httpd，
 #   这里只能放「毫秒级」的本地 RPC 查询，绝不能放下载这类长任务。
-# ★ 白名单派发：$2 只允许下面四个词，绝不把它拼进命令串（无 eval、无字符串拼接）。
+# ★ 白名单派发：$2 只允许下面 11 个词，绝不把它拼进命令串（无 eval、无字符串拼接）。
+#   ★ 这 11 个词必须与 Advanced_easytier.asp 里 ET_INFO_BUSY 的 11 个键、
+#   以及 <select id="et_info_kind"> 的 11 个 option 逐字一致 —— 三处各挡一道。
 # ★ 命令串总长必须 < 127 字节（httpd 的 static SystemCmd[128]）。
 #   实测 "easytier.sh info connector" 也只有 27 字节，余量充足。
 # ★ node 用【默认 table 输出】而不是 -o json：json 里的 config 字段内嵌

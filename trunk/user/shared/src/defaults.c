@@ -936,6 +936,7 @@ struct nvram_pair router_defaults[] = {
 	{ "easytier_dev_name", "et0" },
 	{ "easytier_log_level", "info" },
 	{ "easytier_download_proxy", "" },
+	{ "easytier_version", "" },
 	{ "easytier_dhcp", "0" },
 	{ "easytier_latency_first", "0" },
 	{ "easytier_disable_ipv6", "0" },

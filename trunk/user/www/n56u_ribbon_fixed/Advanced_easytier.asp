@@ -42,6 +42,9 @@ $j(document).ready(function() {
 
 	// P3 日志区块：等 DOM 就绪再初始化（要绑事件、要读 textarea）
 	et_log_init();
+
+	// 二进制版本下拉框：回填已保存的值（见 et_ver_init 的注释）
+	et_ver_init();
 });
 
 </script>
@@ -260,14 +263,23 @@ function et_log_init(){
 	et_log_refresh();
 }
 
-// 连接信息四个按钮各自的「处理中」提示。
+// 连接信息 11 种查询各自的「处理中」提示。
 // ★ 这个对象同时充当 kind 的白名单 —— 与 easytier.sh 里 et_info 的 case 白名单一一对应，
-//   两边各挡一道。
+//   两边各挡一道。★ 键必须与后端 11 个 case 臂逐字一致：这里少一个，界面上就多一个
+//   「点了没反应」的死选项（easytier_info 会静默 return）；这里多一个，后端会回
+//   用法行而不是数据。改动任一侧都要同步另一侧。
 var ET_INFO_BUSY = {
-	peer:  "正在查询对端列表…",
-	route: "正在查询路由表…",
-	node:  "正在查询本机信息…",
-	conn:  "正在查询连接器…"
+	peer:       "正在查询对端列表…",
+	route:      "正在查询路由表…",
+	node:       "正在查询本机信息…",
+	conn:       "正在查询连接器…",
+	stun:       "正在查询 NAT 类型…",
+	peercenter: "正在查询中继服务器…",
+	vpnportal:  "正在查询 VPN 门户…",
+	proxy:      "正在查询子网代理…",
+	acl:        "正在查询 ACL 规则…",
+	mapped:     "正在查询端口映射…",
+	stats:      "正在查询运行统计…"
 };
 
 // 连接信息：把 easytier-cli 的一张表渲染进只读文本框。
@@ -281,6 +293,78 @@ function easytier_info(kind){
 	et_syscmd("easytier.sh info " + kind, function(t){
 		$j("#et_info_out").val(t || "(无输出)");
 		$j("#et_info_state").text(t ? "" : "命令通道无响应");
+	});
+}
+
+// 「查询」按钮：从下拉框取 kind。
+// ★ 白名单仍由 easytier_info 内的 hasOwnProperty 兜底，而不是靠「下拉框里只有合法值」——
+//   下拉框的值虽然是页面常量，但「前端传什么后端就查什么」这条链路不该依赖 UI 的表现。
+function et_info_query(){
+	easytier_info($j("#et_info_kind").val());
+}
+
+// ---------------------------------------------------------------------------
+// 二进制版本（task 3）
+//
+// ★★ 为什么必须 et_ver_init() 回填：<select> 里原本只有「跟随固件默认版本」一个
+//    选项。用户存过 v2.7.0 后刷新页面，若不把这个值重新插成 option 并选中，浏览器
+//    提交的是【第一个】选项 ⇒ 值被静默改回空 ⇒ 用户的版本选择凭空消失，零报错。
+//    这是 <select> + 运行时选项最典型的坑。
+// ★★ 所以 select 的初始 HTML 带 disabled：选项要等这次回调才知道。若在回调返回前
+//    就点了「应用本页设置」，disabled 控件【不会】被提交 ⇒ nvram 里那个键保持原值，
+//    而不是被浏览器当成「选中第一项」写成空。回调无论如何都会把它解禁。
+// ★ 为什么走 SystemCmd 而不是服务端 nvram_get_x：这个值经 apply.cgi 原样转发，
+//    是不可信输入；服务端拼进 HTML 等于开一个 XSS 面（本页其它 nvram 值都是我们
+//    自己在设备上生成的，这个不是）。经 easytier_download.sh 的 selver 校验后再给，
+//    拿到的一定是 vN.N.N 形态的纯文本。
+// ---------------------------------------------------------------------------
+
+function et_ver_ok(v){
+	return /^v[0-9]+\.[0-9]+\.[0-9]+$/.test(v);
+}
+
+// 往版本下拉框里插一个选项（已存在则不重复插）。sel 为真时同时选中它。
+// ★ 用 createElement + createTextNode，不碰任何 HTML 解析路径：v 虽已在服务端
+//   校验过，这里再挡一道的成本是零。
+function et_ver_add_option(v, sel){
+	if (!et_ver_ok(v)) return;
+	var box = $j("#easytier_version");
+	if (box.find("option").filter(function(){ return this.value === v; }).length === 0){
+		var op = document.createElement("option");
+		op.value = v;
+		op.appendChild(document.createTextNode(v));
+		box.append(op);
+	}
+	if (sel) box.val(v);
+}
+
+// 回填已保存的版本，并把下拉框解禁。selver 未选或值非法时打空 ⇒ 保持默认项不动。
+function et_ver_init(){
+	et_syscmd("easytier_download.sh selver", function(t){
+		if (t) et_ver_add_option(t, true);
+		$j("#easytier_version").removeAttr("disabled");
+	});
+}
+
+// 拉取可用版本列表并逐个插入。
+function et_ver_list(){
+	$j("#et_ver_state").text("正在查询…");
+	et_syscmd("easytier_download.sh versions", function(t){
+		$j("#easytier_version").removeAttr("disabled");
+		var arr = (t || "").split("\n"), n = 0;
+		for (var i = 0; i < arr.length; ++i){
+			var v = $j.trim(arr[i]);
+			if (et_ver_ok(v)){ et_ver_add_option(v, false); ++n; }
+		}
+		if (n > 0){
+			$j("#et_ver_state").text("已列出 " + n + " 个可用版本");
+		} else {
+			// ★★ 一个都没解析出来时必须把【原始回显】显示出来：versions 失败时打的
+			//    是中文原因（网络失败 / 解析不出等），被上面那个正则一滤就全没了，
+			//    界面只剩「正在查询…」永远停在那儿 —— 排障最需要的那句话恰好被
+			//    自己的过滤器吃掉。
+			$j("#et_ver_state").text(t || "命令通道无响应");
+		}
 	});
 }
 
@@ -517,23 +601,48 @@ function easytier_info(kind){
 
 										</tr>
 										<tr>
+										<th>二进制版本（改完点「下载 / 校验二进制」才生效；选「跟随固件默认版本」全程不联网取指纹）</th>
+				<td>
+					<select name="easytier_version" id="easytier_version" class="input" style="width: 200px" disabled="disabled">
+						<option value="">跟随固件默认版本</option>
+					</select>
+					<input class="btn" type="button" value="查询可用版本" onclick="et_ver_list()" style="margin-left: 8px;" />
+					<span id="et_ver_state" style="margin-left: 8px; color: #888;"></span>
+				</td>
+
+										</tr>
+										<tr>
 										<th>二进制状态</th>
 				<td>
 					<span id="et_bin_state" style="margin-right: 12px;"><% nvram_get_x("","easytier_bin_state"); %></span>
 					<input class="btn" type="button" value="下载 / 校验二进制" onclick="easytier_dl()" />
 					<input class="btn" type="button" value="刷新状态" onclick="easytier_state()" style="margin-left: 8px;" />
 					<div style="margin-top: 6px; color: #888;">约 8.9 MiB，后台下载；小闪存机型固件不含二进制，须先下载到 /tmp。</div>
-					<div style="margin-top: 6px; color: #888;">★ 未移植 OpenWrt 版的「下载指定版本」与「自己上传二进制」：本固件把 zip / core / cli 三个 sha256 常量钉死在 easytier_download.sh 里，下完必校验。要放开任意版本或任意文件，就得退回「跑一下 -h、看输出里有没有 easytier 字样」这种格式探测，等于把校验降级成猜测 —— 故不移植。</div>
+					<div style="margin-top: 6px; color: #888;">★ 版本列表点「查询可用版本」从 EasyTier 官方仓库实时拉取，不在固件里写死。校验指纹随之分两路：选「跟随固件默认版本」时比对固件内置的 sha256 常量（全程不联网）；选了具体版本时改用官方发布 API 返回的资产摘要（经 TLS 取得）。两条路下完都必校验，校验不过不会覆盖现有二进制。</div>
+					<div style="margin-top: 6px; color: #888;">★ 仍未移植 OpenWrt 版的「自己上传二进制」：那要放开任意文件，就只能退回「跑一下 -h、看输出里有没有 easytier 字样」这种格式探测，等于把校验降级成猜测 —— 故不移植。</div>
 				</td>
 
 										</tr>
 										<tr>
 										<th>连接信息 / 二进制详情（只读；走本机查询，不影响隧道）</th>
 				<td>
-					<input class="btn" type="button" value="对端列表" onclick="easytier_info('peer')" />
-					<input class="btn" type="button" value="路由表" onclick="easytier_info('route')" style="margin-left: 8px;" />
-					<input class="btn" type="button" value="本机信息" onclick="easytier_info('node')" style="margin-left: 8px;" />
-					<input class="btn" type="button" value="连接器" onclick="easytier_info('conn')" style="margin-left: 8px;" />
+					<!-- 11 种查询共用一个下拉框 + 一个查询按钮：按钮式排到第 11 个会挤满一行，
+					     且与后端 et_info 的 case 白名单不再一一对应（此前只有 4 个按钮）。
+					     ★ 刻意【不给 name】：没有 name 就不会被 apply.cgi 当作 nvram 键写盘。 -->
+					<select id="et_info_kind" class="input" style="width: 200px">
+						<option value="peer">对端列表</option>
+						<option value="route">路由表</option>
+						<option value="node">本机信息</option>
+						<option value="conn">连接器</option>
+						<option value="stun">NAT 类型</option>
+						<option value="peercenter">中继服务器</option>
+						<option value="vpnportal">VPN 门户</option>
+						<option value="proxy">子网代理</option>
+						<option value="acl">ACL 规则</option>
+						<option value="mapped">端口映射</option>
+						<option value="stats">运行统计</option>
+					</select>
+					<input class="btn" type="button" value="查询" onclick="et_info_query()" style="margin-left: 8px;" />
 					<input class="btn" type="button" value="二进制详情" onclick="easytier_bininfo()" style="margin-left: 8px;" />
 					<span id="et_info_state" style="margin-left: 12px; color: #888;"></span>
 					<div style="margin-top: 6px;">

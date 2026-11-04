@@ -1104,6 +1104,11 @@
 			/* 下载代理只影响 easytier_download.sh，跟隧道运行态无关 ⇒
 			 * 事件掩码留 0，改它不该把已经跑起来的隧道重启一遍。 */
 			{"easytier_download_proxy", "", NULL, 0},
+			/* 二进制版本。跟 download_proxy 同理：它只决定「下次点下载去取哪个
+			 * 版本」，不改隧道运行态 ⇒ 事件掩码留 0。
+			 * ★ 空值 = 跟随固件钉死的默认版本 —— 那条路径全程不联网取指纹，
+			 *   与改造前逐字节等价；非空值才走官方 API 取摘要那条路。 */
+			{"easytier_version", "", NULL, 0},
 			{"easytier_dhcp", "", NULL, EVM_RESTART_EASYTIER},
 			{"easytier_latency_first", "", NULL, EVM_RESTART_EASYTIER},
 			{"easytier_disable_ipv6", "", NULL, EVM_RESTART_EASYTIER},
