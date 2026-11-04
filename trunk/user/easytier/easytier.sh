@@ -2,7 +2,7 @@
 #
 # EasyTier 客户端控制脚本（Padavan 移植版）
 #
-# 用法： easytier.sh start|stop|restart|firewall|dl|state|C
+# 用法： easytier.sh start|stop|restart|firewall|dl|state|C|info|link|log|logclear|bininfo
 #   start    —— 启动 easytier-core（本体转后台运行）
 #   stop     —— 停止进程并清理运行态
 #   restart  —— 先 stop 再 start
@@ -10,6 +10,7 @@
 #   C        —— 保活检查，供 cron 每分钟调用：进程掉了就拉起、日志超限就轮转
 #   dl       —— 后台下载二进制（界面按钮调用，立刻返回、不等下载完）
 #   state    —— 单行回显二进制与隧道状态（界面按钮调用，只读、同步）
+#   info     —— 只读查询连接信息（peer/route/node/conn），界面按钮调用
 #
 # 与官方 OpenWrt easytier.init 的差异（移植时必须做的等价替换）：
 #   * Padavan 没有 procd        ⇒ 用「后台启动 + cron 保活」替代 respawn（照 frp.sh）
@@ -44,6 +45,10 @@ ET_LOG=/tmp/easytier.log
 ET_TSFILE=/tmp/easytier_time
 ET_DL=/usr/bin/easytier_download.sh
 ET_SELF=/usr/bin/easytier.sh
+# P2 通断检测的运行态标记（/tmp 是 tmpfs，重启即清）。
+# ★ 不复用 ET_TSFILE：那个是「进程启动时刻」，语义不同，混用会让宽限期算错。
+ET_CHKTS=/tmp/easytier_check_ts
+ET_CHKFAIL=/tmp/easytier_check_fail
 
 # 下载互斥锁（目录）。★ 别和 easytier_download.sh 的暂存目录/tmp/easytier_dl 撞名。
 ET_DL_LOCK=/tmp/easytier_dl.lock
@@ -74,6 +79,39 @@ et_rotate_log() {
 		tail -n 500 "$ET_LOG" > "$ET_LOG.tmp" 2>/dev/null && mv "$ET_LOG.tmp" "$ET_LOG"
 		et_log "日志超过 5120KB，已截断保留最后 500 行"
 	fi
+}
+
+# 供界面「日志」区块调用：把日志尾部若干行原样打到 stdout。
+# ★ 刻意【不做】ANSI 去色：busybox sed 自己只认 \n \t \r 三种反斜杠转义
+#   （sed.c 的 copy_parsing_escapes 那个 for 循环），\x1b 能不能生效取决于
+#   libc 的 regex，而那部分源码没随 busybox 进本仓库 ⇒ 在仓库内无法证实。
+#   去色改在前端用 JS 正则做（确定且可测）。就算前端也没去掉，ESC 字节留在
+#   文本里同样无害 —— 前端用 .val() 赋值，永不解析 HTML。
+# ★ 行数走白名单：非数字 / 前导零 / 越界一律回落到 300。
+#   前导零必须单独挡：busybox test 的 -ge 可能按 base 0 解析，"08" 会直接报错。
+#   注意 0*[0-9]* 命中 "08"/"010" 但【不】命中 "0"，所以 0 会落到下面的范围判断被拒。
+et_log_view() {
+	_lo_n="$2"
+	case "$_lo_n" in
+		''|*[!0-9]*|0*[0-9]*) _lo_n=300 ;;
+	esac
+	if [ "$_lo_n" -lt 1 ] || [ "$_lo_n" -gt 2000 ]; then
+		_lo_n=300
+	fi
+	[ -f "$ET_LOG" ] || { echo "日志文件不存在（$ET_LOG）"; return 0; }
+	tail -n "$_lo_n" "$ET_LOG"
+	return 0
+}
+
+# 供界面「清空日志」按钮调用。
+# ★ 顺序要紧：先截断、再写审计行。反过来的话那句「日志已被手动清空」
+#   会被自己清掉，界面表现成「点了清空，文件是空的但没有任何痕迹」。
+# ★ 只清文件，不碰运行中的隧道进程。
+et_log_clear() {
+	: > "$ET_LOG" 2>/dev/null || { echo "无法清空日志（$ET_LOG）"; return 1; }
+	et_log "日志已被手动清空"
+	echo "日志已清空"
+	return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -130,6 +168,59 @@ et_dl_lock_release() {
 	rmdir "$ET_DL_LOCK" 2>/dev/null
 }
 
+# IPv4 合法性校验。
+# ★ 为什么必须校验：检测目标 IP 是本脚本里唯一会进 ping 命令行的用户输入。
+#   直接拼进去等于把命令注入面开到 nvram 上，所以读配置时就逐个过筛，
+#   只保留合法的（不是「发现非法就整体拒绝」——那样一个笔误就让整个功能失效）。
+# ★ 用 IFS=. + set -- 拆 4 段逐段校验，不依赖外部命令。
+#   函数内的 set -- 只改本函数自己的 $@，不影响调用方。
+et_valid_ip4() {
+	case "$1" in
+		*[!0-9.]*) return 1 ;;
+	esac
+	_vi_save=$IFS
+	IFS=.
+	set -- $1
+	IFS=$_vi_save
+	[ $# -eq 4 ] || return 1
+	for _vi_o in "$@"; do
+		# 空段（"1..2"）与前导零（"010"）一并拒掉 —— busybox 的 test
+		# 可能按 base 0 解析，"010" 会变成 8。
+		case "$_vi_o" in ''|*[!0-9]*|0*[0-9]*) return 1 ;; esac
+		[ "$_vi_o" -le 255 ] || return 1
+	done
+	return 0
+}
+
+# P2 通断检测的配置读取与白名单校验。
+# ★ 单独成函数而不是内联进 et_load_cfg：那段有 case + for + 两处分支，
+#   内联会把 et_load_cfg 的 CCN 顶到阈值上限（实测 11 -> 15）。
+et_load_check_cfg() {
+	ET_CHKEN=$(nvram get easytier_check_enable)
+
+	# 检测周期（分钟，1-1440）。前导零一并拒掉 —— busybox 的 test 可能按
+	#   base 0 解析，"08" 会解析失败、"010" 会变成 8。
+	ET_CHKTIME=$(nvram get easytier_check_time)
+	case "$ET_CHKTIME" in
+		''|*[!0-9]*|0*[0-9]*) ET_CHKTIME=2 ;;
+		*) [ "$ET_CHKTIME" -ge 1 ] && [ "$ET_CHKTIME" -le 1440 ] || ET_CHKTIME=2 ;;
+	esac
+
+	# 检测目标 IP 列表：★ 这是唯一会进 ping 命令行的用户输入 ⇒ 逐个按 IPv4 校验，
+	#   只保留合法的；一个都不合法就等于没配。分隔符接受空格 / 逗号 / 分号
+	#   （与 ET_PEERS 一样宽进）。
+	ET_CHKIP=""
+	for _vip in $(printf '%s' "$(nvram get easytier_check_ip)" | tr ',;' '  '); do
+		et_valid_ip4 "$_vip" || continue
+		# ★ 这里刻意【不】用「去掉首个空格」的参数展开写法：lizard 的 shell 词法器
+		#   会把参数展开内部出现的井号当成注释起点，连带吃掉同一行行尾的右花括号
+		#   ⇒ 函数大括号永不闭合 ⇒ 整个函数被静默丢弃、复杂度统计归零。
+		#   改成「非空才补分隔空格」，效果等价且对分析器透明。
+		[ -n "$ET_CHKIP" ] && ET_CHKIP="$ET_CHKIP "
+		ET_CHKIP="$ET_CHKIP$_vip"
+	done
+}
+
 # 一次性把 nvram 读进变量，避免后面反复调用 nvram
 et_load_cfg() {
 	et_resolve_bins
@@ -167,6 +258,67 @@ et_load_cfg() {
 		error|warn|info|debug|trace) ET_LOGLEVEL=$(nvram get easytier_log_level) ;;
 		*) ET_LOGLEVEL=info ;;
 	esac
+
+	# ---- P1 常用高级项 ----
+	# 布尔项一律只读原值，白名单校验放在 argv 拼装处（那里才知道要不要发 flag）。
+	ET_DHCP=$(nvram get easytier_dhcp)
+	ET_LATFIRST=$(nvram get easytier_latency_first)
+	ET_NOIPV6=$(nvram get easytier_disable_ipv6)
+	ET_NOUPNP=$(nvram get easytier_disable_upnp)
+	ET_EXITNODE=$(nvram get easytier_enable_exit_node)
+	ET_NOENCRYPT=$(nvram get easytier_disable_encryption)
+	ET_PRIVATE=$(nvram get easytier_private_mode)
+
+	# 多线程：★ easytier-core 2.6.4 自己的默认值是 true（不是 false）。
+	#   所以这里【不能】用「勾了才发」——那样「界面不勾」等于「实际开启」，
+	#   语义正好反了。改成：nvram 默认 "1" + 恒发显式值，
+	#   界面勾选就是唯一事实来源，完全不依赖二进制默认值。
+	case "$(nvram get easytier_multi_thread)" in
+		0) ET_MT=0 ;;
+		*) ET_MT=1 ;;
+	esac
+
+	# 线程数：clap 侧是 u32，非数字会让 easytier-core 当场退出 ⇒ 只放纯数字。
+	ET_MTCOUNT=$(nvram get easytier_multi_thread_count)
+	case "$ET_MTCOUNT" in
+		''|*[!0-9]*) ET_MTCOUNT="" ;;
+	esac
+
+	# 默认协议：只影响「优先尝试哪种监听协议」，非法值不崩，但会让优先级提示失效。
+	#   "-" 是上游 LuCI 的「未指定」哨兵 ⇒ 与空串一样不传。
+	ET_DEFPROTO=$(nvram get easytier_default_protocol)
+	case "$ET_DEFPROTO" in
+		tcp|udp|ws|wss) ;;
+		*) ET_DEFPROTO="" ;;
+	esac
+
+	# 压缩：★ 非法值在 easytier-core 里是 panic!（core.rs:1117），不是优雅报错
+	#   ⇒ 白名单是硬要求，不是「顺手校验」。none 是二进制默认值 ⇒ 不传。
+	ET_COMP=$(nvram get easytier_compression)
+	case "$ET_COMP" in
+		zstd) ;;
+		*) ET_COMP="" ;;
+	esac
+
+	# 加密算法：★ v2.6.4 只有这 4 个合法值。上游 LuCI 还列了 3 个 openssl-*，
+	#   那是 2.7.0 才有的枚举项，在我们这个二进制上必然报错。
+	#   aes-gcm 是二进制默认值 ⇒ 与空串一样不传。
+	ET_ENCA=$(nvram get easytier_encryption_algorithm)
+	case "$ET_ENCA" in
+		xor|aes-256-gcm|chacha20) ;;
+		*) ET_ENCA="" ;;
+	esac
+
+	# SOCKS5 端口：1-65535 纯数字。前导零一并拒掉 —— busybox 的 test 可能按
+	#   八进制解析（base 0 自动识别），"08" 会解析失败，"01080" 会变成 576。
+	ET_SOCKS=$(nvram get easytier_socks5)
+	case "$ET_SOCKS" in
+		''|*[!0-9]*|0*[0-9]*) ET_SOCKS="" ;;
+		*) [ "$ET_SOCKS" -ge 1 ] && [ "$ET_SOCKS" -le 65535 ] || ET_SOCKS="" ;;
+	esac
+
+	# ---- P2 通断检测（读侧与校验见 et_load_check_cfg）----
+	et_load_check_cfg
 }
 
 # ---------------------------------------------------------------------------
@@ -178,6 +330,76 @@ et_load_cfg() {
 et_check_net() {
 	/bin/ping -c 2 -w 5 223.5.5.5 >/dev/null 2>&1 && return 0
 	/bin/ping -c 2 -w 5 114.114.114.114 >/dev/null 2>&1 && return 0
+	return 1
+}
+
+# 通断检测（P2）：隧道健康时周期性 ping 用户指定的目标 IP，全不通则重启隧道。
+#
+# ★ 与上游 LuCI 插件的三处刻意差异：
+#   1. 上游用 procd 起一个常驻 while 循环；Padavan 没有 procd，本脚本复用已有的
+#      cron 每分钟一跳（easytier_check），不额外起进程、不额外占内存。
+#   2. 上游「本轮全不通就立刻重启」—— 目标 IP 自己挂掉就会变成重启循环。
+#      这里要求【连续两轮】全不通才重启：误判代价从「断一次」降到「多等一轮」。
+#   3. 上游每轮都写一行日志（每 checktime 分钟一条）。这里只在【状态翻转】和
+#      【触发重启】时写 —— 每轮都写会同时灌 syslog 和 $ET_LOG。
+#
+# 返回 0 = 健康 / 未启用 / 未到检测时刻（调用方继续）
+# 返回 1 = 判定不通且已达重启阈值（调用方负责 stop）
+et_check_link() {
+	[ "$ET_CHKEN" = "1" ] || return 0
+	[ -n "$ET_CHKIP" ] || return 0
+
+	# 时间闸门：cron 每分钟一跳，而检测周期是分钟级 ⇒ 自己记上次检测时刻。
+	# /tmp 是 tmpfs，重启后标记消失 ⇒ 开机第一跳就会检测一次（期望行为）。
+	_ck_now=$(date +%s)
+	_ck_last=$(cat "$ET_CHKTS" 2>/dev/null)
+	case "$_ck_last" in ''|*[!0-9]*) _ck_last=0 ;; esac
+	[ $((_ck_now - _ck_last)) -ge $((ET_CHKTIME * 60)) ] || return 0
+	echo "$_ck_now" > "$ET_CHKTS"
+
+	# ★ 外网本身不通就直接跳过 —— 这正是上游那个 223.5.5.5 预检的作用。
+	#   没有它，宽带掉线会被误判成「隧道故障」，变成无限重启。
+	et_check_net || return 0
+
+	_ck_ok=""
+	_ck_ms=""
+	for _ck_ip in $ET_CHKIP; do
+		_ck_out=$(/bin/ping -c 2 -w 4 "$_ck_ip" 2>/dev/null)
+		if [ $? -eq 0 ]; then
+			_ck_ok="$_ck_ip"
+			# ★ 用 sed 取平均延迟，而不是上游（以及本仓库 sh_ezscript.sh）的
+			#   awk -F/ '{print $4}' —— 带 mdev 的输出
+			#   （min/avg/max/mdev = a/b/c/d）里 $4 是 mdev，不是 avg。
+			#   sed 只认「= 后面的前两个数」，两种格式都对。
+			_ck_ms=$(printf '%s\n' "$_ck_out" | sed -n 's/.*= *[0-9.]*\/\([0-9.]*\).*/\1/p')
+			break
+		fi
+	done
+
+	if [ -n "$_ck_ok" ]; then
+		# 只有「上一轮判定为不通」时才记恢复，否则每轮都会刷日志。
+		if [ -f "$ET_CHKFAIL" ]; then
+			_ck_msg="通断检测：已恢复（$_ck_ok 可达"
+			[ -n "$_ck_ms" ] && _ck_msg="$_ck_msg，平均 ${_ck_ms}ms"
+			et_log "$_ck_msg）"
+		fi
+		rm -f "$ET_CHKFAIL"
+		return 0
+	fi
+
+	# 全不通：累加失败轮次
+	_ck_n=$(cat "$ET_CHKFAIL" 2>/dev/null)
+	case "$_ck_n" in ''|*[!0-9]*) _ck_n=0 ;; esac
+	_ck_n=$((_ck_n + 1))
+	echo "$_ck_n" > "$ET_CHKFAIL"
+
+	if [ "$_ck_n" -lt 2 ]; then
+		et_log "通断检测：$ET_CHKIP 全部不可达（第 $_ck_n 轮，未达重启阈值）"
+		return 0
+	fi
+
+	et_log "通断检测：$ET_CHKIP 连续 $_ck_n 轮全部不可达，重启 easytier-core"
+	rm -f "$ET_CHKFAIL"
 	return 1
 }
 
@@ -274,6 +496,52 @@ et_clean_firewall() {
 # ---------------------------------------------------------------------------
 # 启动 / 停止
 # ---------------------------------------------------------------------------
+# P1 常用高级项 -> 追加给 easytier-core 的额外参数
+# ---------------------------------------------------------------------------
+# ★ 为什么返回 token 流、由调用方词分割追加，而不是在函数里 set -- "$@"：
+#   函数内的 set -- 只改那个函数自己的 $@，参数出了函数就没了。
+#   这里输出的都是【已白名单校验过】的纯 token（数字 / 固定枚举 / true|false），
+#   不含空格；本脚本第 33 行又开着 set -f（无通配）⇒ 调用方词分割是安全的。
+# ★ 用 printf 而不是 echo：echo 对 `--latency-first` 这类以 - 开头的参数
+#   行为依 busybox 版本而异，可能吞掉前导 `--`。
+et_p1_flags() {
+	[ "$ET_DHCP" = "1" ] && printf '%s\n' -d
+	[ "$ET_LATFIRST" = "1" ] && printf '%s\n' --latency-first
+	[ "$ET_NOIPV6" = "1" ] && printf '%s\n' --disable-ipv6
+	[ "$ET_NOUPNP" = "1" ] && printf '%s\n' --disable-upnp
+	[ "$ET_EXITNODE" = "1" ] && printf '%s\n' --enable-exit-node
+	[ "$ET_NOENCRYPT" = "1" ] && printf '%s\n' -u
+
+	# ★★ 本批唯一必须【带值】的布尔项。
+	#   --private-mode 的 clap 定义没有 num_args / default_missing_value
+	#   ⇒ 裸写 `--private-mode` 会让 clap 解析失败、easytier-core 当场退出，
+	#   症状是「页面保存正常、隧道却起不来」，极难排查。必须显式给 true。
+	[ "$ET_PRIVATE" = "1" ] && printf '%s\n' --private-mode true
+
+	# ★ multi-thread 恒发显式值（对齐上游 initd.sh 的做法），理由见 et_load_cfg。
+	if [ "$ET_MT" = "0" ]; then
+		printf '%s\n' --multi-thread false
+	else
+		printf '%s\n' --multi-thread true
+	fi
+
+	[ -n "$ET_MTCOUNT" ] && printf '%s\n' --multi-thread-count "$ET_MTCOUNT"
+	[ -n "$ET_DEFPROTO" ] && printf '%s\n' --default-protocol "$ET_DEFPROTO"
+	[ -n "$ET_COMP" ] && printf '%s\n' --compression "$ET_COMP"
+	[ -n "$ET_ENCA" ] && printf '%s\n' --encryption-algorithm "$ET_ENCA"
+	[ -n "$ET_SOCKS" ] && printf '%s\n' --socks5 "$ET_SOCKS"
+
+	# ★ SOCKS5 是【无认证】代理，且 easytier-core 固定绑 0.0.0.0（所有接口，
+	#   core.rs:1011 / launcher.rs:669）—— 官方明确不再自动放行该端口到 WAN。
+	#   本脚本同样只在 LAN 可达（et_setup_firewall 只放行监听端口），
+	#   需要公网访问请自行在防火墙页加规则。
+	# ★ 这条日志放函数内而不是调用方：et_log 的 stdout 是干净的
+	#   （logger 走 syslog、echo 已重定向到 $ET_LOG）⇒ 不污染 token 流。
+	[ -n "$ET_SOCKS" ] && et_log "提示：SOCKS5 代理已监听 0.0.0.0:$ET_SOCKS（无认证，仅 LAN 可达）"
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 
 easytier_start() {
 	et_load_cfg
@@ -328,6 +596,12 @@ easytier_start() {
 	set -- "$@" --console-log-level "$ET_LOGLEVEL"
 	set -- "$@" -l "tcp://0.0.0.0:$ET_LISTEN"
 	[ "$ET_NOP2P" = "1" ] && set -- "$@" --disable-p2p
+
+	# ---- P1 常用高级项 ----
+	# ★ 参数拼装全部在 et_p1_flags（返回 token 流）：输出的都是白名单校验过的
+	#   纯 token（数字 / 固定枚举 / true|false），不含空格与 glob 字符；
+	#   本脚本第 33 行已 set -f ⇒ 这里的词分割不做路径展开。
+	set -- "$@" $(et_p1_flags)
 
 	# ★ 多值字段必须内联在这里展开，不能抽成函数：
 	#   抽成函数的话 set -- 只改那个函数自己的 $@，加进去的参数全丢；
@@ -393,6 +667,9 @@ easytier_stop() {
 		rm -f "/tmp/$_c"
 	done
 	rm -f "$ET_TSFILE"
+	# 通断检测的运行态一并清掉：stop 之后重新 start 等于「重新开始计数」，
+	# 否则手动重启后残留的失败计数会让下一轮直接触发重启。
+	rm -f "$ET_CHKTS" "$ET_CHKFAIL"
 
 	# ★ 刻意不删 $ET_LOG：日志是排障依据，留在 /tmp 由轮转机制管理
 }
@@ -418,10 +695,14 @@ easytier_check() {
 		fi
 
 		if ifconfig "$ET_DEV" >/dev/null 2>&1; then
-			return 0	# 进程在、接口在 ⇒ 健康
+			# 进程在、接口在 ⇒ 隧道本身健康；再跑一次 P2 通断检测。
+			# et_check_link 返回 1 = 判定「不通且已达重启阈值」，
+			# 落到下面的 easytier_stop 统一重启。
+			et_check_link && return 0
+			et_log "通断检测：隧道不通，重启 easytier-core"
+		else
+			et_log "easytier-core 在运行但接口 $ET_DEV 不存在，判定为异常并重启"
 		fi
-
-		et_log "easytier-core 在运行但接口 $ET_DEV 不存在，判定为异常并重启"
 		easytier_stop
 	fi
 
@@ -508,6 +789,86 @@ easytier_state() {
 	fi
 }
 
+# 供界面「连接信息」按钮调用：把 easytier-cli 的一张表原样打到 stdout。
+#
+# ★ 只读、同步。走 SystemCmd 通道 ⇒ httpd 是单进程 select 循环、doSystem 阻塞，
+#   这次请求会一直等到命令跑完才返回 ⇒ 界面不需要轮询。也正因为会阻塞 httpd，
+#   这里只能放「毫秒级」的本地 RPC 查询，绝不能放下载这类长任务。
+# ★ 白名单派发：$2 只允许下面四个词，绝不把它拼进命令串（无 eval、无字符串拼接）。
+# ★ 命令串总长必须 < 127 字节（httpd 的 static SystemCmd[128]）。
+#   实测 "easytier.sh info connector" 也只有 27 字节，余量充足。
+# ★ node 用【默认 table 输出】而不是 -o json：json 里的 config 字段内嵌
+#   network_secret 明文，原样回显到网页 = 泄漏网络准入凭据。
+# ★ connector 的 table 输出是 Rust Debug 格式（不是对齐表格），能看但排版不同。
+# ★ 这里【不判 easytier_enable】：隧道关着时也允许查看，此时 RPC 连不上，
+#   回显的就是 cli 的原始报错，正好是排障需要的证据。
+et_info() {
+	et_load_cfg		# 内含 et_resolve_bins，顺带把 ET_RPC 读出来
+	[ -x "$ET_CLI" ] || { echo "easytier-cli 不存在，请先点「下载 / 校验二进制」"; return 1; }
+	case "$2" in
+		peer)  "$ET_CLI" -p "$ET_RPC" peer ;;
+		route) "$ET_CLI" -p "$ET_RPC" route ;;
+		node)  "$ET_CLI" -p "$ET_RPC" node ;;
+		conn)  "$ET_CLI" -p "$ET_RPC" connector ;;
+		stun)       "$ET_CLI" -p "$ET_RPC" stun ;;
+		peercenter) "$ET_CLI" -p "$ET_RPC" peer-center ;;
+		vpnportal)  "$ET_CLI" -p "$ET_RPC" vpn-portal ;;
+		proxy)      "$ET_CLI" -p "$ET_RPC" proxy ;;
+		acl)        "$ET_CLI" -p "$ET_RPC" acl stats ;;
+		mapped)     "$ET_CLI" -p "$ET_RPC" mapped-listener ;;
+		stats)      "$ET_CLI" -p "$ET_RPC" stats ;;
+		*)     echo "用法: $0 info {peer|route|node|conn|stun|peercenter|vpnportal|proxy|acl|mapped|stats}" ; return 1 ;;
+	esac
+}
+
+# 供 et_bininfo 用：打一行「标签: 路径（大小）」。文件不在就报「不存在」。
+# ★ 用 du -h 而不是 ls -lh：du 的输出只有一列、也不受 TTY 影响。
+#   （本仓库的 ls 开了 FEATURE_LS_COLOR，管道下虽不染色，但少一个变量少一个坑。）
+et_bin_line() {
+	if [ -f "$2" ]; then
+		_bi_sz=$(du -h "$2" 2>/dev/null | awk '{print $1}')
+		echo "  $1: $2（${_bi_sz:-?}）"
+	else
+		echo "  $1: $2（不存在）"
+	fi
+	return 0
+}
+
+# 供界面「二进制详情」按钮调用：把二进制的【环境事实】打成多行。
+#
+# ★ 与 easytier_state 刻意分工：state 给【单行结论】并做 sha256 校验
+#   （设备上 1~3 秒）；bininfo 只读路径 / 大小 / 分区剩余空间，不哈希、秒回。
+#   两者不重叠，免得同一个哈希被算两遍。
+# ★ 与 et_info 的其它子命令不同，这里【不检查 cli 是否存在】——
+#   二进制缺失时恰恰最需要看这个。所以它挂在顶层子命令上，
+#   不放在 et_info 那个 `[ -x "$ET_CLI" ]` 前置检查之后。
+# ★ 只读本地文件与 df，不碰 RPC、不碰隧道。
+et_bininfo() {
+	et_resolve_bins
+
+	_bi_src="下载到 $ET_DIR"
+	if [ "$ET_CORE" = "$ET_SYS_CORE" ]; then
+		_bi_src="固件内置"
+	elif [ ! -f "$ET_CORE" ] && [ ! -f "$ET_CLI" ]; then
+		# 两个都不在时【不能】报「下载到」—— 那会让人以为已经下好了。
+		_bi_src="未就绪（两个二进制都不在）"
+	fi
+
+	echo "easytier 二进制信息"
+	echo "  来源      : $_bi_src"
+	et_bin_line "核心程序  " "$ET_CORE"
+	et_bin_line "命令行工具" "$ET_CLI"
+
+	# ${ET_CORE%/*} 是纯参数展开，不含井号 ⇒ 不触发 lizard 的 shell 盲区。
+	_bi_dir="${ET_CORE%/*}"
+	if [ -d "$_bi_dir" ]; then
+		# df -h 第 2 行是数据行：$2=Size $4=Available（见 df.c 的表头）。
+		_bi_space=$(df -h "$_bi_dir" 2>/dev/null | awk 'NR==2{print "剩余 "$4" / 共 "$2}')
+		echo "  所在分区  : $_bi_dir（${_bi_space:-?}）"
+	fi
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # 子命令派发
 # ---------------------------------------------------------------------------
@@ -539,7 +900,36 @@ case "$1" in
 	C)
 		easytier_check
 		;;
+	link)
+		# 手动触发一次通断检测（排障用，只读探测、不重启任何东西）。
+		# ★ 把周期置 0 绕过时间闸门 —— 否则刚跑过一轮的话这里什么都不做，
+		#   看起来像「命令没生效」，排障时最容易误判。
+		et_load_cfg
+		ET_CHKTIME=0
+		if [ "$ET_CHKEN" != "1" ]; then
+			echo "通断检测未启用（easytier_check_enable=$ET_CHKEN）"
+		elif et_check_link; then
+			echo "通断检测：正常"
+		else
+			echo "通断检测：$ET_CHKIP 全部不可达，判定不通"
+		fi
+		;;
+	info)
+		et_info "$@"
+		;;
+	log)
+		# 只读命令：拉日志尾部。行数由 et_log_view 自己白名单。
+		et_log_view "$@"
+		;;
+	logclear)
+		# 清空日志（只清文件，不动隧道）。
+		et_log_clear
+		;;
+	bininfo)
+		# 只读命令：二进制路径 / 来源 / 大小 / 分区剩余空间。不哈希、不碰隧道。
+		et_bininfo
+		;;
 	*)
-		echo "用法: $0 {start|stop|restart|firewall|dl|state|C}"
+echo "用法: $0 {start|stop|restart|firewall|dl|state|C|info|link|log|logclear|bininfo}"
 		;;
 esac

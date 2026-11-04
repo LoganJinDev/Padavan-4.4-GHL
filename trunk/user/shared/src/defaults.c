@@ -936,6 +936,22 @@ struct nvram_pair router_defaults[] = {
 	{ "easytier_dev_name", "et0" },
 	{ "easytier_log_level", "info" },
 	{ "easytier_download_proxy", "" },
+	{ "easytier_dhcp", "0" },
+	{ "easytier_latency_first", "0" },
+	{ "easytier_disable_ipv6", "0" },
+	{ "easytier_disable_upnp", "0" },
+	{ "easytier_enable_exit_node", "0" },
+	{ "easytier_disable_encryption", "0" },
+	{ "easytier_private_mode", "0" },
+	{ "easytier_multi_thread", "1" },
+	{ "easytier_multi_thread_count", "" },
+	{ "easytier_default_protocol", "" },
+	{ "easytier_compression", "" },
+	{ "easytier_encryption_algorithm", "" },
+	{ "easytier_socks5", "" },
+	{ "easytier_check_enable", "0" },
+	{ "easytier_check_ip", "" },
+	{ "easytier_check_time", "2" },
 #endif
 
 #if defined(APP_SQM)

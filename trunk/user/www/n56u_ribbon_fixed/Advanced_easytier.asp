@@ -30,7 +30,18 @@ $j(document).ready(function() {
 	init_itoggle('easytier_enable');
 	init_itoggle('easytier_masq');
 	init_itoggle('easytier_disable_p2p');
+	init_itoggle('easytier_dhcp');
+	init_itoggle('easytier_latency_first');
+	init_itoggle('easytier_disable_ipv6');
+	init_itoggle('easytier_enable_exit_node');
+	init_itoggle('easytier_disable_encryption');
+	init_itoggle('easytier_disable_upnp');
+	init_itoggle('easytier_private_mode');
+	init_itoggle('easytier_multi_thread');
+	init_itoggle('easytier_check_enable');
 
+	// P3 日志区块：等 DOM 就绪再初始化（要绑事件、要读 textarea）
+	et_log_init();
 });
 
 </script>
@@ -74,11 +85,14 @@ function done_validating(action){
 	refreshpage();
 }
 
-function et_syscmd(cmd){
-	// 走 SystemCmd 通道执行一条命令，把回显写进状态格。
+function et_syscmd(cmd, onDone){
+	// 走 SystemCmd 通道执行一条命令，把回显交给 onDone。
 	// ★ 两段式：POST /apply.cgi 只是把命令【登记】进 sys_script，
 	//   紧接着的 GET /console_response.asp 才是真正的执行扳机。
 	//   少了第二段，命令永远不会跑（而且不报任何错）。
+	// ★ 第二段用 complete 而不是 success：GET 失败时也要回调，
+	//   否则调用方会永远停在「处理中」，一个错误都看不到。
+	// ★ 不做 timeout：httpd 单进程阻塞，命令跑多久这里就等多久。
 	$j.ajax({
 		type: "POST",
 		url: "/apply.cgi",
@@ -93,21 +107,181 @@ function et_syscmd(cmd){
 				type: "GET",
 				url: "/console_response.asp",
 				dataType: "text",
-				success: function(t){ $j("#et_bin_state").text($j.trim(t)); },
-				error: function(){ $j("#et_bin_state").text("命令通道无响应"); }
+				complete: function(xhr){
+					onDone(xhr && xhr.responseText ? $j.trim(xhr.responseText) : "");
+				}
 			});
 		},
-		error: function(){ $j("#et_bin_state").text("命令提交失败"); }
+		error: function(){ onDone(""); }
 	});
+}
+
+// 把回显写进二进制状态格（单行）。
+function et_bin_state_show(t){
+	$j("#et_bin_state").text(t || "命令通道无响应");
 }
 
 function easytier_dl(){
 	$j("#et_bin_state").text("正在下载…");
-	et_syscmd("easytier.sh dl");
+	et_syscmd("easytier.sh dl", et_bin_state_show);
 }
 
 function easytier_state(){
-	et_syscmd("easytier.sh state");
+	et_syscmd("easytier.sh state", et_bin_state_show);
+}
+
+// 二进制详情（P4）：路径 / 来源 / 大小 / 所在分区剩余空间。
+// ★ 与「刷新状态」分工：状态给单行结论并做 sha256 校验（要等 1~3 秒）；
+//   详情只读环境事实，不哈希、秒回。两者刻意不重叠。
+// ★ 与「连接信息」的四个按钮不同：这里不查 RPC，二进制缺失时也能跑，
+//   正是排障最需要的那一刻。
+// ★ 回显里含路径，一律走 .val() 当纯文本写进 textarea，绝不解析 HTML。
+function easytier_bininfo(){
+	$j("#et_info_state").text("正在读取…");
+	$j("#et_info_out").val("");
+	et_syscmd("easytier.sh bininfo", function(t){
+		$j("#et_info_out").val(t || "(无输出)");
+		$j("#et_info_state").text(t ? "" : "命令通道无响应");
+	});
+}
+
+// ---------------------------------------------------------------------------
+// 日志区块（P3）
+//
+// ★★ 为什么不用「服务端 dump 进 textarea」这个最像先例的写法
+//    （Advanced_frp_log.asp 就是这么写的）：那条路最终落到 aspbw.c 的 do_f()，
+//    而 do_f 是【裸 fputs】，零转义。日志里只要出现 textarea 的结束标签紧跟着
+//    script 标签，就能逃出 textarea 的 RCDATA 上下文 ⇒ 在管理员会话里执行任意
+//    脚本（存储型 XSS）。而 easytier.log 是【混合日志】：easytier-core 自己的
+//    stdout 也追加进同一个文件，里面有对端主机名 / 网络名这类远端可控字符串。
+//    ⇒ 走 SystemCmd 通道取文本，再用 .val() 赋值。.val() 设的是 value 属性，
+//    永不解析 HTML，天然免疫。
+//    （上面刻意不写具体的标签字面量与服务端脚本标记：本页是 ASP，脚本块里出现
+//      「小于号+百分号」会被服务端当真的脚本块执行；而 textarea 的结束标签写进
+//      JS 注释里虽然无害，却会让下面的反向判据失去判别力。）
+//
+// ★ 为什么「级别下拉框」换成「关键字搜索框」：本文件是混合日志，我们自己写的
+//   事件行（启动/停止/通断检测状态翻转）不带级别词，只有 core 的行带。用级别
+//   过滤会把最该看的行静默藏掉。搜索框能覆盖级别过滤（直接输 ERROR），且无歧义。
+// ---------------------------------------------------------------------------
+
+var ET_LOG_TIMER = null;   // 自动刷新定时器
+var ET_LOG_BUSY  = false;  // 在途标记
+var ET_LOG_RAW   = "";     // 最近一次取回的原始文本（供搜索框重放）
+
+// 去掉 ANSI 颜色转义。
+// ★ 刻意放在前端而不是交给 sed：busybox sed 自己只认 \n \t \r 三种反斜杠转义
+//   （sed.c 的 copy_parsing_escapes），\x1b 能否生效取决于 libc 的 regex，而那部分
+//   源码没随 busybox 进本仓库 ⇒ 在仓库内无法证实。放前端是确定且可测的。
+function et_log_strip_ansi(s){
+	return String(s === null || s === undefined ? "" : s).replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+// 按搜索框内容过滤行。空关键字 = 原样返回。
+function et_log_filter(s){
+	var kw = $j.trim($j("#et_log_kw").val());
+	if (kw === "") return s;
+	var arr = s.split("\n"), out = [];
+	for (var i = 0; i < arr.length; ++i){
+		if (arr[i].indexOf(kw) >= 0) out.push(arr[i]);
+	}
+	return out.join("\n");
+}
+
+// 把文本写进 textarea。★ 只走 .val()，绝不写 innerHTML。
+function et_log_paint(){
+	var ta = $j("#et_log_text");
+	ta.val(et_log_filter(ET_LOG_RAW));
+	if (ta[0]) ta.scrollTop(ta[0].scrollHeight);   // 贴到底部，最新的行在末尾
+}
+
+function et_log_show(t){
+	ET_LOG_RAW = et_log_strip_ansi(t);
+	et_log_paint();
+}
+
+// 拉一次日志。
+// ★ 在途标记是必须的：httpd 是单进程 select 循环，SystemCmd 只有一个
+//   static 缓冲槽，重叠的 POST 会互相踩。
+function et_log_refresh(){
+	if (ET_LOG_BUSY) return;
+	ET_LOG_BUSY = true;
+	var n = $j("#et_log_lines").val() || "300";
+	et_syscmd("easytier.sh log " + n, function(t){
+		ET_LOG_BUSY = false;
+		et_log_show(t);
+	});
+}
+
+function et_log_clear(){
+	if (ET_LOG_BUSY) return;
+	if (!confirm("确定清空日志？只清空文件，不影响正在运行的隧道。")) return;
+	ET_LOG_BUSY = true;
+	et_syscmd("easytier.sh logclear", function(t){
+		ET_LOG_BUSY = false;
+		et_log_show(t);
+		et_log_refresh();   // 紧接着把清空后的真实内容再拉一次
+	});
+}
+
+// 自动刷新。★ 页面在后台就不刷：httpd 单进程，后台标签页定时打命令会拖慢整机。
+function et_log_autorefresh(on){
+	if (ET_LOG_TIMER){ clearInterval(ET_LOG_TIMER); ET_LOG_TIMER = null; }
+	if (!on) return;
+	ET_LOG_TIMER = setInterval(function(){
+		if (document.hidden) return;
+		et_log_refresh();
+	}, 5000);
+}
+
+function et_log_download(){
+	try {
+		var blob = new Blob([ET_LOG_RAW], {type: "text/plain;charset=utf-8"});
+		var url = URL.createObjectURL(blob);
+		var a = document.createElement("a");
+		a.href = url;
+		a.download = "easytier.log";
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		setTimeout(function(){ URL.revokeObjectURL(url); }, 10000);
+	} catch (e) {
+		alert("当前浏览器不支持直接下载，请用搜索框筛选后手动复制。");
+	}
+}
+
+// 初始化：特性探测 + 绑事件 + 首次拉取。
+function et_log_init(){
+	if (typeof Blob === "undefined" || typeof URL === "undefined" || !URL.createObjectURL)
+		$j("#et_log_dl").hide();
+	$j("#et_log_kw").on("input keyup", et_log_paint);
+	$j("#et_log_lines").on("change", et_log_refresh);
+	$j("#et_log_auto").on("change", function(){ et_log_autorefresh(this.checked); });
+	et_log_refresh();
+}
+
+// 连接信息四个按钮各自的「处理中」提示。
+// ★ 这个对象同时充当 kind 的白名单 —— 与 easytier.sh 里 et_info 的 case 白名单一一对应，
+//   两边各挡一道。
+var ET_INFO_BUSY = {
+	peer:  "正在查询对端列表…",
+	route: "正在查询路由表…",
+	node:  "正在查询本机信息…",
+	conn:  "正在查询连接器…"
+};
+
+// 连接信息：把 easytier-cli 的一张表渲染进只读文本框。
+// ★ 用 .val() 写 <textarea>，不用 .html()/.text() 写 div —— .val() 不解析 HTML，
+//   命令回显里的任何字符都只当文本，天然没有 XSS 面
+//   （与 Shadowsocks_GeoView.asp 的 #result 同一手法）。
+function easytier_info(kind){
+	if (!ET_INFO_BUSY.hasOwnProperty(kind)) { return; }
+	$j("#et_info_state").text("处理中…");
+	$j("#et_info_out").val("");
+	et_syscmd("easytier.sh info " + kind, function(t){
+		$j("#et_info_out").val(t || "(无输出)");
+		$j("#et_info_state").text(t ? "" : "命令通道无响应");
+	});
 }
 
 
@@ -349,8 +523,261 @@ function easytier_state(){
 					<input class="btn" type="button" value="下载 / 校验二进制" onclick="easytier_dl()" />
 					<input class="btn" type="button" value="刷新状态" onclick="easytier_state()" style="margin-left: 8px;" />
 					<div style="margin-top: 6px; color: #888;">约 8.9 MiB，后台下载；小闪存机型固件不含二进制，须先下载到 /tmp。</div>
+					<div style="margin-top: 6px; color: #888;">★ 未移植 OpenWrt 版的「下载指定版本」与「自己上传二进制」：本固件把 zip / core / cli 三个 sha256 常量钉死在 easytier_download.sh 里，下完必校验。要放开任意版本或任意文件，就得退回「跑一下 -h、看输出里有没有 easytier 字样」这种格式探测，等于把校验降级成猜测 —— 故不移植。</div>
 				</td>
 
+										</tr>
+										<tr>
+										<th>连接信息 / 二进制详情（只读；走本机查询，不影响隧道）</th>
+				<td>
+					<input class="btn" type="button" value="对端列表" onclick="easytier_info('peer')" />
+					<input class="btn" type="button" value="路由表" onclick="easytier_info('route')" style="margin-left: 8px;" />
+					<input class="btn" type="button" value="本机信息" onclick="easytier_info('node')" style="margin-left: 8px;" />
+					<input class="btn" type="button" value="连接器" onclick="easytier_info('conn')" style="margin-left: 8px;" />
+					<input class="btn" type="button" value="二进制详情" onclick="easytier_bininfo()" style="margin-left: 8px;" />
+					<span id="et_info_state" style="margin-left: 12px; color: #888;"></span>
+					<div style="margin-top: 6px;">
+						<textarea id="et_info_out" rows="14" class="span12" readonly="readonly" wrap="off" spellcheck="false" style="font-family:'Courier New'; font-size:12px;"></textarea>
+					</div>
+					<div style="margin-top: 6px; color: #888;">先点「刷新状态」确认二进制就绪；隧道未运行时查询会报 RPC 连接失败，属正常。</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th colspan="2" style="background: #eef3f8;">高级选项（不确定就保持默认；改动会重启隧道）</th>
+										</tr>
+										<tr>
+										<th>虚拟 IP 用 DHCP 获取（勾选后忽略上面的「本机虚拟 IP」）</th>
+				<td>
+						<div class="main_itoggle">
+						<div id="easytier_dhcp_on_of">
+							<input type="checkbox" id="easytier_dhcp_fake" <% nvram_match_x("", "easytier_dhcp", "1", "value=1 checked"); %><% nvram_match_x("", "easytier_dhcp", "0", "value=0"); %>  />
+						</div>
+						</div>
+						<div style="position: absolute; margin-left: -10000px;">
+							<input type="radio" value="1" name="easytier_dhcp" id="easytier_dhcp_1" class="input" value="1" <% nvram_match_x("", "easytier_dhcp", "1", "checked"); %> /><#checkbox_Yes#>
+							<input type="radio" value="0" name="easytier_dhcp" id="easytier_dhcp_0" class="input" value="0" <% nvram_match_x("", "easytier_dhcp", "0", "checked"); %> /><#checkbox_No#>
+						</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>延迟优先（优先选低延迟路径，牺牲部分吞吐）</th>
+				<td>
+						<div class="main_itoggle">
+						<div id="easytier_latency_first_on_of">
+							<input type="checkbox" id="easytier_latency_first_fake" <% nvram_match_x("", "easytier_latency_first", "1", "value=1 checked"); %><% nvram_match_x("", "easytier_latency_first", "0", "value=0"); %>  />
+						</div>
+						</div>
+						<div style="position: absolute; margin-left: -10000px;">
+							<input type="radio" value="1" name="easytier_latency_first" id="easytier_latency_first_1" class="input" value="1" <% nvram_match_x("", "easytier_latency_first", "1", "checked"); %> /><#checkbox_Yes#>
+							<input type="radio" value="0" name="easytier_latency_first" id="easytier_latency_first_0" class="input" value="0" <% nvram_match_x("", "easytier_latency_first", "0", "checked"); %> /><#checkbox_No#>
+						</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>禁用 IPv6（隧道内不走 IPv6）</th>
+				<td>
+						<div class="main_itoggle">
+						<div id="easytier_disable_ipv6_on_of">
+							<input type="checkbox" id="easytier_disable_ipv6_fake" <% nvram_match_x("", "easytier_disable_ipv6", "1", "value=1 checked"); %><% nvram_match_x("", "easytier_disable_ipv6", "0", "value=0"); %>  />
+						</div>
+						</div>
+						<div style="position: absolute; margin-left: -10000px;">
+							<input type="radio" value="1" name="easytier_disable_ipv6" id="easytier_disable_ipv6_1" class="input" value="1" <% nvram_match_x("", "easytier_disable_ipv6", "1", "checked"); %> /><#checkbox_Yes#>
+							<input type="radio" value="0" name="easytier_disable_ipv6" id="easytier_disable_ipv6_0" class="input" value="0" <% nvram_match_x("", "easytier_disable_ipv6", "0", "checked"); %> /><#checkbox_No#>
+						</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>允许本机作为出口节点（其他节点可经本机上网）</th>
+				<td>
+						<div class="main_itoggle">
+						<div id="easytier_enable_exit_node_on_of">
+							<input type="checkbox" id="easytier_enable_exit_node_fake" <% nvram_match_x("", "easytier_enable_exit_node", "1", "value=1 checked"); %><% nvram_match_x("", "easytier_enable_exit_node", "0", "value=0"); %>  />
+						</div>
+						</div>
+						<div style="position: absolute; margin-left: -10000px;">
+							<input type="radio" value="1" name="easytier_enable_exit_node" id="easytier_enable_exit_node_1" class="input" value="1" <% nvram_match_x("", "easytier_enable_exit_node", "1", "checked"); %> /><#checkbox_Yes#>
+							<input type="radio" value="0" name="easytier_enable_exit_node" id="easytier_enable_exit_node_0" class="input" value="0" <% nvram_match_x("", "easytier_enable_exit_node", "0", "checked"); %> /><#checkbox_No#>
+						</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>关闭数据加密（性能略高，但隧道内明文，仅限可信网络）</th>
+				<td>
+						<div class="main_itoggle">
+						<div id="easytier_disable_encryption_on_of">
+							<input type="checkbox" id="easytier_disable_encryption_fake" <% nvram_match_x("", "easytier_disable_encryption", "1", "value=1 checked"); %><% nvram_match_x("", "easytier_disable_encryption", "0", "value=0"); %>  />
+						</div>
+						</div>
+						<div style="position: absolute; margin-left: -10000px;">
+							<input type="radio" value="1" name="easytier_disable_encryption" id="easytier_disable_encryption_1" class="input" value="1" <% nvram_match_x("", "easytier_disable_encryption", "1", "checked"); %> /><#checkbox_Yes#>
+							<input type="radio" value="0" name="easytier_disable_encryption" id="easytier_disable_encryption_0" class="input" value="0" <% nvram_match_x("", "easytier_disable_encryption", "0", "checked"); %> /><#checkbox_No#>
+						</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>加密算法（留空 = 默认 aes-gcm）</th>
+				<td>
+					<select name="easytier_encryption_algorithm" class="input">
+						<option value="" <% nvram_match_x("", "easytier_encryption_algorithm", "", "selected"); %>>默认（aes-gcm）</option>
+						<option value="aes-gcm" <% nvram_match_x("", "easytier_encryption_algorithm", "aes-gcm", "selected"); %>>aes-gcm</option>
+						<option value="aes-256-gcm" <% nvram_match_x("", "easytier_encryption_algorithm", "aes-256-gcm", "selected"); %>>aes-256-gcm</option>
+						<option value="chacha20" <% nvram_match_x("", "easytier_encryption_algorithm", "chacha20", "selected"); %>>chacha20</option>
+						<option value="xor" <% nvram_match_x("", "easytier_encryption_algorithm", "xor", "selected"); %>>xor（不加密，最快）</option>
+					</select>
+					<div style="margin-top: 6px; color: #888;">本机型二进制只认这 4 种。上游 LuCI 里的 openssl-* 三项是 2.7.0 的枚举项，在 v2.6.4 上填了会让 easytier-core 直接退出。</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>数据压缩（留空 = 不压缩）</th>
+				<td>
+					<select name="easytier_compression" class="input">
+						<option value="" <% nvram_match_x("", "easytier_compression", "", "selected"); %>>不压缩</option>
+						<option value="none" <% nvram_match_x("", "easytier_compression", "none", "selected"); %>>none</option>
+						<option value="zstd" <% nvram_match_x("", "easytier_compression", "zstd", "selected"); %>>zstd</option>
+					</select>
+					<div style="margin-top: 6px; color: #888;">只允许 none / zstd。其他值会让 easytier-core 直接崩溃（panic），隧道起不来。</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>默认连接协议（留空 = 自动）</th>
+				<td>
+					<select name="easytier_default_protocol" class="input">
+						<option value="" <% nvram_match_x("", "easytier_default_protocol", "", "selected"); %>>自动</option>
+						<option value="tcp" <% nvram_match_x("", "easytier_default_protocol", "tcp", "selected"); %>>tcp</option>
+						<option value="udp" <% nvram_match_x("", "easytier_default_protocol", "udp", "selected"); %>>udp</option>
+						<option value="ws" <% nvram_match_x("", "easytier_default_protocol", "ws", "selected"); %>>ws</option>
+						<option value="wss" <% nvram_match_x("", "easytier_default_protocol", "wss", "selected"); %>>wss</option>
+					</select>
+					<div style="margin-top: 6px; color: #888;">只影响「优先尝试哪种协议」，不影响能否连通。</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>禁用 UPnP 端口映射（默认允许自动映射）</th>
+				<td>
+						<div class="main_itoggle">
+						<div id="easytier_disable_upnp_on_of">
+							<input type="checkbox" id="easytier_disable_upnp_fake" <% nvram_match_x("", "easytier_disable_upnp", "1", "value=1 checked"); %><% nvram_match_x("", "easytier_disable_upnp", "0", "value=0"); %>  />
+						</div>
+						</div>
+						<div style="position: absolute; margin-left: -10000px;">
+							<input type="radio" value="1" name="easytier_disable_upnp" id="easytier_disable_upnp_1" class="input" value="1" <% nvram_match_x("", "easytier_disable_upnp", "1", "checked"); %> /><#checkbox_Yes#>
+							<input type="radio" value="0" name="easytier_disable_upnp" id="easytier_disable_upnp_0" class="input" value="0" <% nvram_match_x("", "easytier_disable_upnp", "0", "checked"); %> /><#checkbox_No#>
+						</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>私有模式（只与手动填写的对端互联，不做公共节点发现）</th>
+				<td>
+						<div class="main_itoggle">
+						<div id="easytier_private_mode_on_of">
+							<input type="checkbox" id="easytier_private_mode_fake" <% nvram_match_x("", "easytier_private_mode", "1", "value=1 checked"); %><% nvram_match_x("", "easytier_private_mode", "0", "value=0"); %>  />
+						</div>
+						</div>
+						<div style="position: absolute; margin-left: -10000px;">
+							<input type="radio" value="1" name="easytier_private_mode" id="easytier_private_mode_1" class="input" value="1" <% nvram_match_x("", "easytier_private_mode", "1", "checked"); %> /><#checkbox_Yes#>
+							<input type="radio" value="0" name="easytier_private_mode" id="easytier_private_mode_0" class="input" value="0" <% nvram_match_x("", "easytier_private_mode", "0", "checked"); %> /><#checkbox_No#>
+						</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>多线程（关闭可降低低端设备负载）</th>
+				<td>
+						<div class="main_itoggle">
+						<div id="easytier_multi_thread_on_of">
+							<input type="checkbox" id="easytier_multi_thread_fake" <% nvram_match_x("", "easytier_multi_thread", "1", "value=1 checked"); %><% nvram_match_x("", "easytier_multi_thread", "0", "value=0"); %>  />
+						</div>
+						</div>
+						<div style="position: absolute; margin-left: -10000px;">
+							<input type="radio" value="1" name="easytier_multi_thread" id="easytier_multi_thread_1" class="input" value="1" <% nvram_match_x("", "easytier_multi_thread", "1", "checked"); %> /><#checkbox_Yes#>
+							<input type="radio" value="0" name="easytier_multi_thread" id="easytier_multi_thread_0" class="input" value="0" <% nvram_match_x("", "easytier_multi_thread", "0", "checked"); %> /><#checkbox_No#>
+						</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>多线程数（留空用二进制默认值 2；仅多线程开启时有意义）</th>
+				<td>
+					<input type="text" class="input" name="easytier_multi_thread_count" id="easytier_multi_thread_count" style="width: 120px" value="<% nvram_get_x("","easytier_multi_thread_count"); %>" />
+					<div style="margin-top: 6px; color: #888;">只接受数字。</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>SOCKS5 代理端口（留空 = 不开；1-65535）</th>
+				<td>
+					<input type="text" class="input" name="easytier_socks5" id="easytier_socks5" style="width: 120px" value="<% nvram_get_x("","easytier_socks5"); %>" />
+					<div style="margin-top: 6px; color: #888;">这是【无认证】代理，且 easytier-core 固定监听 0.0.0.0（所有接口）。本固件只在 LAN 可达，不会自动放行到 WAN；确需公网访问请自行在防火墙页加规则。</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th colspan="2" style="background: #eef3f8;">通断检测（周期性探测；全不通则自动重启隧道）</th>
+										</tr>
+										<tr>
+										<th>启用通断检测（隧道起来后才会探测）</th>
+				<td>
+						<div class="main_itoggle">
+						<div id="easytier_check_enable_on_of">
+							<input type="checkbox" id="easytier_check_enable_fake" <% nvram_match_x("", "easytier_check_enable", "1", "value=1 checked"); %><% nvram_match_x("", "easytier_check_enable", "0", "value=0"); %>  />
+						</div>
+						</div>
+						<div style="position: absolute; margin-left: -10000px;">
+							<input type="radio" value="1" name="easytier_check_enable" id="easytier_check_enable_1" class="input" value="1" <% nvram_match_x("", "easytier_check_enable", "1", "checked"); %> /><#checkbox_Yes#>
+							<input type="radio" value="0" name="easytier_check_enable" id="easytier_check_enable_0" class="input" value="0" <% nvram_match_x("", "easytier_check_enable", "0", "checked"); %> /><#checkbox_No#>
+						</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>检测目标 IP（空格分隔多个）</th>
+				<td>
+					<input type="text" class="input" name="easytier_check_ip" id="easytier_check_ip" style="width: 300px" value="<% nvram_get_x("","easytier_check_ip"); %>" />
+					<div style="margin-top: 6px; color: #888;">只接受 IPv4，非法项会被自动忽略。★ 判定规则是「【所有】目标都 ping 不通」才算故障 —— 所以别只填一个对端节点，最好掺一个稳定的公网地址（例如 223.5.5.5）。</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th>检测周期（分钟，1-1440）</th>
+				<td>
+					<input type="text" class="input" name="easytier_check_time" id="easytier_check_time" style="width: 120px" value="<% nvram_get_x("","easytier_check_time"); %>" />
+					<div style="margin-top: 6px; color: #888;">外网本身不通时会自动跳过本轮（避免宽带掉线被误判成隧道故障）；连续两轮全部不可达才重启，避免目标自身抖动导致重启循环。</div>
+				</td>
+
+										</tr>
+										<tr>
+										<th colspan="2" style="background: #eef3f8;">运行日志（最近若干行；含 easytier-core 自身输出）</th>
+										</tr>
+										<tr>
+										<th>日志内容</th>
+				<td>
+						<div style="margin-bottom: 6px;">
+							显示行数
+							<select id="et_log_lines" class="input" style="width: 90px">
+								<option value="100">100</option>
+								<option value="300" selected="selected">300</option>
+								<option value="1000">1000</option>
+							</select>
+							&nbsp;搜索 <input type="text" id="et_log_kw" class="input" style="width: 180px" placeholder="关键字，如 ERROR / 已恢复" />
+							&nbsp;<label style="display: inline;"><input type="checkbox" id="et_log_auto" /> 自动刷新(5s)</label>
+							&nbsp;<input type="button" class="btn" value="刷新" onclick="et_log_refresh()" />
+							<input type="button" class="btn" value="清空" onclick="et_log_clear()" />
+							<input type="button" class="btn" id="et_log_dl" value="下载" onclick="et_log_download()" />
+						</div>
+						<textarea id="et_log_text" rows="18" readonly="readonly" wrap="off" style="width: 100%; box-sizing: border-box; height: 340px; font-family: 'Courier New', Courier, monospace; font-size: 12px;"></textarea>
+						<div style="margin-top: 6px; color: #888;">★ 本文件是混合日志：本脚本的事件行（启动/停止/通断检测状态翻转）+ easytier-core 自身的 stdout。搜索框是纯前端过滤，只影响显示。清空只清空文件，不影响运行中的隧道。</div>
+				</td>
 										</tr>
 										<tr>
 											<td colspan="4" style="border-top: 0 none;">

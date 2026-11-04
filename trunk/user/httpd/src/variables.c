@@ -1104,6 +1104,22 @@
 			/* 下载代理只影响 easytier_download.sh，跟隧道运行态无关 ⇒
 			 * 事件掩码留 0，改它不该把已经跑起来的隧道重启一遍。 */
 			{"easytier_download_proxy", "", NULL, 0},
+			{"easytier_dhcp", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_latency_first", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_disable_ipv6", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_disable_upnp", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_enable_exit_node", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_disable_encryption", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_private_mode", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_multi_thread", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_multi_thread_count", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_default_protocol", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_compression", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_encryption_algorithm", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_socks5", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_check_enable", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_check_ip", "", NULL, EVM_RESTART_EASYTIER},
+			{"easytier_check_time", "", NULL, EVM_RESTART_EASYTIER},
 			{0,0,0,0}
 		};
 #endif
