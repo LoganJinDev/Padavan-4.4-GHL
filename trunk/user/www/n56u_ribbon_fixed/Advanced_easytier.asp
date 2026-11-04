@@ -125,8 +125,18 @@ function et_bin_state_show(t){
 }
 
 function easytier_dl(){
+	// ★ 版本必须随命令带过去：这个按钮走的是 SystemCmd 通道，不是表单提交，
+	//   下拉框里选的值不会自己进 nvram。不带的话服务端读到的还是旧版本号，
+	//   于是提示「二进制已存在且校验通过（旧版本号），无需下载」，且零报错。
+	var v = $j("#easytier_version").val() || "";
+	// ★ 这个值会被拼进服务端命令串（sh -c 解释），所以这里必须过滤；
+	//   服务端 setver 还会再校验一遍 —— 两道都要，不能只靠一道。
+	if (v !== "" && !et_ver_ok(v)) {
+		$j("#et_bin_state").text("版本号格式非法，已中止");
+		return;
+	}
 	$j("#et_bin_state").text("正在下载…");
-	et_syscmd("easytier.sh dl", et_bin_state_show);
+	et_syscmd("easytier.sh dl " + (v === "" ? "default" : v), et_bin_state_show);
 }
 
 function easytier_state(){
@@ -601,7 +611,7 @@ function et_ver_list(){
 
 										</tr>
 										<tr>
-										<th>二进制版本（改完点「下载 / 校验二进制」才生效；选「跟随固件默认版本」全程不联网取指纹）</th>
+										<th>二进制版本（选好后点「下载 / 校验二进制」即按该版本下载并生效；选「跟随固件默认版本」全程不联网取指纹）</th>
 				<td>
 					<select name="easytier_version" id="easytier_version" class="input" style="width: 200px" disabled="disabled">
 						<option value="">跟随固件默认版本</option>

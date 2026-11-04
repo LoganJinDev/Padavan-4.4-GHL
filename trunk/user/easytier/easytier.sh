@@ -8,7 +8,9 @@
 #   restart  —— 先 stop 再 start
 #   firewall —— 只重建防火墙规则（由 start_firewall_ex() 钩子调用）
 #   C        —— 保活检查，供 cron 每分钟调用：进程掉了就拉起、日志超限就轮转
-#   dl       —— 后台下载二进制（界面按钮调用，立刻返回、不等下载完）
+#   dl [版本] —— 后台下载二进制（界面按钮调用，立刻返回、不等下载完）。
+#               可选参数即本次要装的版本，"default" = 清除选择、跟随固件默认；
+#               不带参数 = 不改版本。
 #   state    —— 单行回显二进制与隧道状态（界面按钮调用，只读、同步）
 #   info     —— 只读查询连接信息（peer/route/node/conn），界面按钮调用
 #
@@ -556,6 +558,44 @@ et_p1_flags() {
 
 # ---------------------------------------------------------------------------
 
+# 确保「选中的版本」那一份二进制就位：需要则下载，下完重新解析路径。
+# 返回 0 = 二进制可用；1 = 本轮不具备启动条件（下载被别的实例占着 / 仍缺文件）。
+# ★ 单独成函数不是为了好看：easytier_start 的圈复杂度基线就是 20（阈值 15），
+#   而超出的部分几乎全在 argv 拼装那段 —— 那段【不能】抽（抽出去 set -- 只改
+#   被抽函数的 $@，参数全丢）。能安全搬出来的只有本块。
+et_ensure_bin() {
+	# 要不要下，判定只在 easytier_download.sh 的 needdl 里有一份 —— 与
+	# easytier_dl 同一个姿态，这里不抄条件。
+	# ★ 原先 easytier_start 里写的是 `[ ! -x "$ET_CORE" ]`。内置机型上 ET_CORE
+	#   解析成 /usr/bin/easytier-core（存在）⇒ 该判断恒假 ⇒ 用户选了别的版本后
+	#   重启，/tmp 那份被 tmpfs 清掉，设备静默跑回内置版本，而 nvram 里还写着
+	#   新版本号。needdl 比的是「选中的版本 vs 手上这份」，这种情况它答「需要下载」。
+	# ★ 代价可忽略：本函数只在隧道【不在或不通】时才会被调用（见 C 分支的
+	#   pidof 与 et_check_link 两道早返回），不是每分钟都跑。
+	# ★ needdl 的返回码是【反】的：1 = 不需要下载，0 = 需要下载（见其注释）。
+	#   照直觉写成「rc≠0 就该下」会把两种情况彻底对调，所以这里用 if 判成功。
+	if [ -x "$ET_DL" ] && "$ET_DL" needdl >/dev/null 2>&1; then
+		# ★ 必须抢锁：cron 每分钟起一个新进程，而下载会 rm -rf 暂存目录，
+		#   两个实例并发会互相踩掉、双双失败。抢不到就等下一分钟再试。
+		if et_dl_lock_acquire; then
+			et_log "二进制需要更新（$ET_CORE），尝试下载"
+			"$ET_DL" download
+			et_dl_lock_release
+			# ★ 下完必须重新解析：不重解析的话 ET_CORE 还指着内置那份，
+			#   这一轮启动的仍是旧版本，白等一个 cron 周期。
+			et_resolve_bins
+		else
+			et_log "已有下载任务在进行，本轮跳过启动"
+			return 1
+		fi
+	fi
+	if [ ! -x "$ET_CORE" ]; then
+		et_log "错误：$ET_CORE 不存在或不可执行，放弃启动"
+		return 1
+	fi
+	return 0
+}
+
 easytier_start() {
 	et_load_cfg
 
@@ -569,25 +609,10 @@ easytier_start() {
 		return 0
 	fi
 
-	# 二进制不存在就尝试下载（固件内未编译二进制时走这条路）
-	if [ ! -x "$ET_CORE" ]; then
-		if [ -x "$ET_DL" ]; then
-			# ★ 必须抢锁：cron 每分钟起一个新进程，而下载会 rm -rf 暂存目录，
-			#   两个实例并发会互相踩掉、双双失败。抢不到就等下一分钟再试。
-			if et_dl_lock_acquire; then
-				et_log "未找到 $ET_CORE，尝试下载"
-				"$ET_DL" download
-				et_dl_lock_release
-			else
-				et_log "已有下载任务在进行，本轮跳过启动"
-				return 1
-			fi
-		fi
-	fi
-	if [ ! -x "$ET_CORE" ]; then
-		et_log "错误：$ET_CORE 不存在或不可执行，放弃启动"
-		return 1
-	fi
+	# ---- 二进制就位 ----
+	# ★ 判定与下载细节都在 et_ensure_bin 里：本函数圈复杂度的预算要留给
+	#   下面那段【搬不走】的 argv 拼装（见其中关于 set -- 作用域的注释）。
+	et_ensure_bin || return 1
 
 	# 必填项：网络名。没有它 easytier 会落到公共网络，不符合预期。
 	if [ -z "$ET_NETNAME" ]; then
@@ -636,6 +661,14 @@ easytier_start() {
 	# ★ 日志脱敏：network-secret 是网络准入凭据，绝不能落盘
 	et_log "启动：$(printf '%s' "$*" | sed 's/--network-secret [^ ][^ ]*/--network-secret ***/')"
 
+	et_spawn_core "$@"
+}
+
+# 拉起 easytier-core 并做一次「没当场退出」的粗判。
+# ★ 参数就是调用方用 set -- 拼好的完整 argv：函数内 $@ 天然是本函数自己的
+#   那份，与 easytier_start 的 $@ 互不干扰 —— 这正是它【可以】抽出来、
+#   而单值 flag 拼装【不可以】抽的原因。
+et_spawn_core() {
 	# 三个 fd 全部重定向，进程才能脱离控制终端独立存活
 	cd /tmp || return 1
 	"$@" </dev/null >>"$ET_LOG" 2>&1 &
@@ -762,6 +795,21 @@ et_bin_ver() {
 
 easytier_dl() {
 	et_resolve_bins
+
+	# 把本次要装的版本落盘。★ 界面「下载」按钮走的是 httpd 的 SystemCmd 通道，
+	# 不是表单提交 ⇒ 下拉框里选的版本不会自己进 nvram。少了这一步，用户选了
+	# v2.6.3 点下载，needdl 读到的仍是 nvram 里的旧值，于是报
+	# 「二进制已存在且校验通过（旧版本号），无需下载」，且零报错。
+	# ★ 校验与落盘都在 download.sh 里（版本判定只保留一份），这里只转递。
+	# ★ 失败文案【不带】$1 回显：那个值没过校验，把它写进 nvram 的
+	#   easytier_bin_state 等于给服务端渲染开一个存储型 XSS 面。
+	if [ $# -gt 0 ]; then
+		if [ "$1" = "default" ]; then
+			"$ET_DL" setver >/dev/null 2>&1 || { et_state_echo "清除版本选择失败"; return 1; }
+		else
+			"$ET_DL" setver "$1" >/dev/null 2>&1 || { et_state_echo "版本号非法，已中止"; return 1; }
+		fi
+	fi
 
 	# 要不要下？交给 easytier_download.sh 的 needdl 判定，别在这里复制条件。
 	# ★★ 这里曾经写死 `[ -x "$ET_SYS_CORE" ]` ⇒ 大闪存机型（二进制编进固件）上
@@ -931,7 +979,11 @@ case "$1" in
 		[ "$ET_ENABLE" = "1" ] && et_setup_firewall
 		;;
 	dl)
-		easytier_dl
+		# 可选参数：本次要装的版本（"default" = 清除选择、跟随固件默认）。
+		# ★ 界面「下载」按钮走的是 SystemCmd 通道，不是表单提交 ⇒ 下拉框里选的
+		#   版本不会自己进 nvram，必须由命令带过来。不带参数 = 不动版本（命令行手调）。
+		shift
+		easytier_dl "$@"
 		;;
 	state)
 		easytier_state

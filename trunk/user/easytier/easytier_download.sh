@@ -2,7 +2,7 @@
 #
 # EasyTier 二进制下载器（Padavan 移植版）
 #
-# 用法： easytier_download.sh download|check|clean|versions|curver|defver|selver|needdl
+# 用法： easytier_download.sh download|check|clean|versions|curver|defver|selver|setver|needdl
 #   download —— 下载并校验 easytier-core / easytier-cli 到 /tmp/easytier/
 #   check    —— 只校验已存在的文件，不下载（可带参数：check <core路径> <cli路径>）
 #   clean    —— 清掉暂存目录与版本列表缓存
@@ -10,6 +10,7 @@
 #   curver   —— 打印「本机已安装的版本」，无安装记录则打空
 #   defver   —— 打印固件钉死的默认版本（内置机型用它报版本，它没有安装记录）
 #   selver   —— 打印「用户选中的版本」，没选或非法则打空
+#   setver   —— 落盘本次要装的版本（带参数 = 该版本，不带 = 清除选择、跟随默认）
 #   needdl   —— 问「要不要下载」：不需要则打原因并退出 1，需要则退出 0
 #
 # 用途：GHL 这类小闪存机型不把 8.94 MiB 的二进制编进固件（根分区只有 29 MB，
@@ -219,6 +220,39 @@ et_sel_ver() {
 	else
 		echo "$ET_DEF_VER"
 	fi
+}
+
+# 落盘「本次要装的版本」—— setver 子命令的实现，et_sel_ver 的写侧。
+# ★ 为什么需要这个写入口：界面「下载」按钮走的是 httpd 的 SystemCmd 通道，
+#   不是表单提交 ⇒ 下拉框里选的版本【不会】自己进 nvram。少了这一步，
+#   用户选了 v2.6.3 点下载，needdl 读到的仍是 nvram 里的旧值，于是报
+#   「二进制已存在且校验通过（旧版本号），无需下载」，且零报错。
+#   修法不是让界面先去点「应用本页设置」，而是让下载这个动作自带版本 ——
+#   一个动作一个意图，中间不依赖用户再点别的按钮。
+# ★ 入参来自界面（不可信），必须在【这里】再校验一遍：调用方校验过不等于
+#   这里可以不校验，何况这个值要被写进 nvram。
+# ★ 非法值【不回显】：这个值会经 et_state_echo 落进 nvram 的
+#   easytier_bin_state，而那一格是服务端渲染的 ⇒ 回显未校验的输入等于
+#   开一个存储型 XSS 面。要排查去 /tmp/syscmd.log，那里有完整命令串。
+# ★ 必须 commit：apply.cgi 那条路是 commit 的（httpd web_ex.c 的
+#   asus_nvram_commit），这条不是的话重启后选择丢失，表现成
+#   「换完版本、重启又变回去了」。
+et_set_ver() {
+	if [ $# -eq 0 ]; then
+		# 不带参数 = 清除选择、跟随固件默认版本
+		nvram set easytier_version=
+		nvram commit
+		echo "已设为跟随固件默认版本（$ET_DEF_VER）"
+		return 0
+	fi
+	if ! et_valid_ver "$1"; then
+		echo "版本号非法，已中止"
+		return 1
+	fi
+	nvram set easytier_version="$1"
+	nvram commit
+	echo "已选定版本 $1"
+	return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -715,6 +749,14 @@ case "$1" in
 		echo "$_sv"
 	fi
 	;;
+	setver)
+	# 落盘本次要装的版本（界面「下载」按钮随命令携带）。不带参数 = 清除选择。
+	# ★ 必须 shift：不 shift 的话「不带参数」会变成「传了一个空版本号」，
+	#   走校验分支报「版本号非法」，而语义上不带参数是合法的清除动作。
+	shift
+	et_set_ver "$@"
+	exit $?
+		;;
 	defver)
 	# 打印固件钉死的默认版本。★ 供 easytier.sh 报「固件内置那份是什么版本」——
 	#   内置那份没有安装记录（记录只记 /tmp 那份），curver 对它打空。
@@ -743,6 +785,6 @@ case "$1" in
 		et_log "已清理暂存目录 $ET_STAGE 与版本列表缓存"
 		;;
 	*)
-	echo "用法: $0 {download|check|clean|versions|curver|defver|selver|needdl} [core路径 cli路径]"
+	echo "用法: $0 {download|check|clean|versions|curver|defver|selver|setver|needdl} [core路径 cli路径]"
 		;;
 esac
