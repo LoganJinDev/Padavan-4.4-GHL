@@ -73,12 +73,32 @@ et_log() {
 }
 
 # 日志轮转：超过 5120 KiB 就只留最后 500 行（阈值与官方一致）
+#
+# ★★ 只能【原地截断】，绝不能 mv / rename —— 这是 MI-R3G 固件升级恒失败的真根因。
+#   easytier-core 是这么起来的（见 et_spawn_core）：
+#       "$@" </dev/null >>"$ET_LOG" 2>&1 &
+#   它的 fd 1/2 一直吊着 $ET_LOG 的 inode。而 mv 是 rename：目录项改指【新】inode，
+#   老 inode 变成「无目录项但被 fd 持有」，后果有两层，第二层更致命：
+#     1. tmpfs 按 inode 引用计费，老 inode 占的空间【永不回收】；
+#     2. 而且【无上界增长】—— 轮转只看 $ET_LOG 这个新文件（永远很小、够不到阈值），
+#        进程却持续往老 inode 追加 ⇒ 一路涨到 tmpfs 满。
+#   实测（MI-R3G，2026-11-05）：du -sk /tmp = 268KB，而 Shmem = 21936KB，
+#   差 80 倍；/proc/<pid>/fd 里明确是 easytier-core 吊着 easytier.log (deleted)。
+#   /tmp 被吃掉 21.4MiB ⇒ 只剩 29.9MiB，装不下 40.09MiB 的固件包 ⇒ 升级必失败。
+#
+#   cat "$ET_LOG.tmp" > "$ET_LOG" 是【原地】写：先 truncate 再写，inode 不变，
+#   进程 fd 继续有效、空间当场归还。之所以不会写串位置，是因为上面那个 >> 打开时
+#   带了 O_APPEND —— 每次写都落在【当前】文件末尾，截断后自然从 0 开始。
+#   同文件 et_log_clear() 用的 ": > $ET_LOG" 就是这个道理，一对正确写法一个错误写法。
 et_rotate_log() {
 	[ -f "$ET_LOG" ] || return 0
 	_sz=$(ls -l "$ET_LOG" 2>/dev/null | awk '{print int($5/1024)}')
 	[ -z "$_sz" ] && return 0
 	if [ "$_sz" -gt 5120 ]; then
-		tail -n 500 "$ET_LOG" > "$ET_LOG.tmp" 2>/dev/null && mv "$ET_LOG.tmp" "$ET_LOG"
+		if tail -n 500 "$ET_LOG" > "$ET_LOG.tmp" 2>/dev/null; then
+			cat "$ET_LOG.tmp" > "$ET_LOG"
+			rm -f "$ET_LOG.tmp"
+		fi
 		et_log "日志超过 5120KB，已截断保留最后 500 行"
 	fi
 }
@@ -829,7 +849,24 @@ easytier_dl() {
 		return 0
 	fi
 
-	( "$ET_DL" download >/dev/null 2>&1; et_dl_lock_release ) &
+	# ★★ 下完必须让【正在跑】的隧道换用新二进制 —— 这是「换版本点应用不生效」
+	#   缺陷的修法之一。为什么不能靠用户再点「应用」：下载时 setver 已经把
+	#   easytier_version 写进 nvram 并 commit，用户再点「应用」时表单提交的值与该键
+	#   【相等】，而 httpd 的 validate_asp_apply（web_ex.c:947）对「值没变」的变量
+	#   直接 continue ⇒ 事件掩码累积不到 ⇒ 连 EVM_RESTART_EASYTIER 都不会触发。
+	#   所以「下载」这个动作必须自己把新版本用上，不能指望用户再点别的按钮。
+	# ★ 只在【已经在跑】时重启：没跑说明用户没启用或已停用，别擅自拉起来。
+	# ★ 先释放锁再重启：restart 里的 et_ensure_bin 自己也要拿这把锁，
+	#   持着自己的锁去调它会被「已有下载任务在进行，本轮跳过启动」挡掉。
+	(
+		"$ET_DL" download >/dev/null 2>&1
+		_dl_rc=$?
+		et_dl_lock_release
+		if [ "$_dl_rc" -eq 0 ] && [ -n "$(pidof easytier-core)" ]; then
+			et_log "下载完成，重启隧道以启用新版本"
+			"$ET_SELF" restart
+		fi
+	) &
 
 	et_state_echo "已开始后台下载（约 8.9 MiB），完成后点「刷新状态」"
 }

@@ -4,6 +4,16 @@
 #
 #nvram set ntp_ready=0
 
+# /tmp 容量按界面配置恢复（nvram 变量 tmp_size_mb）。
+# ★ 必须放在本脚本最前面：下面会往 /tmp 里写东西（dnsmasq.dom 等），
+#   先定好容量再写，免得刚写完就被 remount 一次。
+# ★ 为什么不去改 dev_init.sh 直接读 nvram：dev_init.sh 跑在 rc 的 init_nodes() 之前，
+#   那一刻 /dev/nvram 还没 mknod 出来，脚本里根本读不到 nvram（读了也是空）。
+# ★ 变量没配过时脚本自己什么都不做 ⇒ 未配置机器的行为与改造前一致。
+if [ -x /sbin/tmp_resize.sh ]; then
+	/sbin/tmp_resize.sh
+fi
+
 mkdir -p /tmp/dnsmasq.dom
 logger -t "防止 DNSmasq 启动失败，创建/tmp/dnsmasq.dom/"
 

@@ -106,9 +106,19 @@ typedef uint8_t u8;
 #define EVM_RESTART_SQM		    (1ULL << 63)
 #define EVM_RESTART_EASYTIER	(1ULL << 54)
 
-#define EVM_RESTART_REBOOT		(1ULL << 64)
+/* ★★ 重启位。原值 (1ULL << 64) 是【未定义行为】：unsigned long long 只有 64 位
+ *    （有效位移计数 0~63），移 64 位越界。实测本工具链（GCC mipsel-linux-musl）
+ *    把它折叠成 0 ⇒ 该位恒不置起 ⇒ 改「操作模式」/「关闭 USB3」后【不会重启】。
+ *    换工具链后它还可能折成别的值：一旦非零，就变成「每次点应用都重启」。
+ *    改用真正的空闲位 55（占用表 0~15、17~63 已满；16/55/56 空闲），语义不变、行为确定。 */
+#define EVM_RESTART_REBOOT		(1ULL << 55)
 
-#define EVM_BLOCK_UNSAFE		(1ULL << 65) /* special case */
+/* ★★ 「仅安全会话（LAN/VPN/HTTPS）可改」标记位。原值 (1ULL << 65) 同样是位移越界
+ *    UB，实测被折成 0 ⇒ web_ex.c 里 `v->event_mask & EVM_BLOCK_UNSAFE` 恒为假
+ *    ⇒ 「非安全会话不得改 http_passwd / 启动脚本 / authorized_keys / ttyd 凭据」
+ *    这条守卫【一直是死代码】。改用空闲位 16：它不是任何 EVM_RESTART_* 位，纯标记，
+ *    在 web_ex.c 累积重启掩码之前会被 `& ~EVM_BLOCK_UNSAFE` 掉，不影响重启语义。 */
+#define EVM_BLOCK_UNSAFE		(1ULL << 16)
 
 
 #define EVT_RESTART_FIREWALL	1

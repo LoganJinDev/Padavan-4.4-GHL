@@ -273,8 +273,19 @@ do_upload_file(FILE *stream, int clen, char *bndr, const char *fn, const char *o
 		if (count > filelen)
 			count = filelen;
 		
+		/* ★★ 这里必须看 fwrite 的返回值。原实现无视返回值却照样 filelen -= count，
+		 *    于是 tmpfs 写满时文件【静默短一截、零报错】，唯一的可见症状是
+		 *    check_crc_image 报那句方向完全错的
+		 *    「Firmware image is corrupted! Please check free space in /tmp!」
+		 *    （它真正触发的分支是 datalen > st_size - sizeof(image_header_t)，
+		 *     即「文件被写短了」，不是「尺寸非法」）。
+		 *    写不满就报错退出；err 分支会 unlink 掉这半截文件，不会留下残骸。 */
+		if (fwrite(ptr, 1, count, fp) != (size_t)count) {
+			httpd_log("%s: write failed (want %d, got short) %s -- free space in /tmp?",
+				"File upload", count, strerror(errno));
+			goto err;
+		}
 		filelen -= count;
-		fwrite(ptr, 1, count, fp);
 		
 		if (bndr && count >= 64)
 			memcpy(buf, ptr + count - 64, 64);
@@ -289,9 +300,23 @@ do_upload_file(FILE *stream, int clen, char *bndr, const char *fn, const char *o
 			break;
 		
 		if (filelen > 0) {
-			fwrite(&ch, 1, 1, fp);
+			/* ★ 同主循环：写不进就别假装写成功了 */
+			if (fwrite(&ch, 1, 1, fp) != 1) {
+				httpd_log("%s: write failed while draining request %s -- free space in /tmp?",
+					"File upload", strerror(errno));
+				goto err;
+			}
 			filelen--;
 		}
+	}
+
+	/* ★★ 落盘成败必须在这里就暴露：fwrite 可能只把数据放进 stdio 缓冲，
+	 *    真正的 ENOSPC 要到 fflush 才报出来。少了这一查，写满 tmpfs 依然会
+	 *    静默产出一个短文件，一路走到 check_crc_image 才报「corrupted」。 */
+	if (fflush(fp) != 0 || ferror(fp)) {
+		httpd_log("%s: flush failed %s -- free space in /tmp?",
+			"File upload", strerror(errno));
+		goto err;
 	}
 
 	ret = 0;

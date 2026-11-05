@@ -29,6 +29,9 @@ function initial(){
 	if (!login_safe()){
 		inputCtrl(document.form.file, 0);
 		inputCtrl(document.form.button, 0);
+		/* /tmp 扩容入口同样只对安全会话开放（服务端 update_action_hook 里还有一道 get_login_safe 闸门） */
+		inputCtrl(document.form.bingtmp, 0);
+		inputCtrl(document.getElementById("tmp_size_mb_in"), 0);
 	}
 }
 
@@ -55,9 +58,25 @@ $j.fn.fileName = function(){
 };
 
 function submitInternet(v){
+	/* ★ 这个函数现在只服务 bigtmp 一个动作，就把 /tmp 容量一并带过去。
+	 *   服务端（update_action_hook）拿到的是 nvram 键 tmp_size_mb，
+	 *   空串 = 不干预（沿用 dev_init.sh 算出的自动值），所以这里允许留空。
+	 *   只做「纯数字」这一层拦截，真正的范围夹取交给 /sbin/tmp_resize.sh ——
+	 *   阈值只有一份，前端不再复制一套边界（否则又会出现两边不一致）。 */
+	var el = document.getElementById("tmp_size_mb_in");
+	var mb = "";
+	if (el) {
+		mb = (el.value || "").replace(/\s+/g, "");
+		if (mb !== "" && !/^[0-9]+$/.test(mb)) {
+			alert("<#TMP_size_bad#>");
+			el.focus();
+			return false;
+		}
+	}
 	showLoading();
 	document.bigtmp_action.action = "bit_action.asp";
 	document.bigtmp_action.connect_action.value = v;
+	document.bigtmp_action.tmp_size_mb.value = mb;
 	document.bigtmp_action.submit();
 }
 
@@ -182,7 +201,7 @@ function submitInternet(v){
                                             <li><#FW_desc4#></li>
                                             <li><#FW_desc5#></li>
                                             <li><#FW_desc6#></li>
-                                            <li><#FW_desc7#><input id="bingtmp" class="btn btn-success" style="width:50px display:none;" type="button" name="bingtmp" value="<#TMP_btn#>" onclick="submitInternet('bigtmp');" /></li>
+                                            <li><#FW_desc7#></li>
                                         </ol>
                                     </div>
 
@@ -194,6 +213,19 @@ function submitInternet(v){
                                         <tr>
                                             <th><#FW_item2#></th>
                                             <td><input type="text" name="firmver" class="input" value="<% nvram_get_x("",  "firmver_sub"); %>" readonly="1"></td>
+                                        </tr>
+                                        <tr>
+                                            <th><#TMP_size_label#></th>
+                                            <td>
+                                                <!-- ★ 改造前这里是一个 style 里写死 display:none 的按钮（页面上永远看不见），
+                                                     而上面第 7 条说明却让用户「点右边按钮」—— 用户根本点不到。
+                                                     现在把入口做成「输入框 + 可见按钮」放到表格里。 -->
+                                                <input type="text" id="tmp_size_mb_in" class="input" style="width:70px;" maxlength="4"
+                                                       value="<% nvram_get_x("", "tmp_size_mb"); %>" />
+                                                <input type="button" name="bingtmp" class="btn btn-success" style="width:110px; margin-left:6px;"
+                                                       value="<#TMP_btn#>" onclick="submitInternet('bigtmp');" />
+                                                <span style="margin-left:8px; color:#888;"><#TMP_size_hint#></span>
+                                            </td>
                                         </tr>
                                         <tr>
                                             <th><#FW_item5#></th>
@@ -231,6 +263,7 @@ function submitInternet(v){
 </div>
 <form method="post" name="bigtmp_action" action="">
     <input type="hidden" name="connect_action" value="">
+    <input type="hidden" name="tmp_size_mb" value="">
 </form>
 </body>
 </html>

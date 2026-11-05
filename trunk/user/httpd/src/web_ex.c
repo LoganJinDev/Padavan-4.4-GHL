@@ -887,14 +887,10 @@ validate_asp_apply(webs_t wp, int sid)
 		if (!get_login_safe() && (v->event_mask & EVM_BLOCK_UNSAFE))
 			continue;
 
-#if defined(APP_TTYD)
-		/* ttyd 登录凭据属于持久 root shell 凭据：仅允许 LAN/VPN 会话修改。
-		 * 这里按变量名显式判定，不复用 EVM_BLOCK_UNSAFE ——
-		 * 该宏是 (1ULL << 65)，位移超出 unsigned long long 宽度属未定义行为，
-		 * 与重启位做 & ~ 运算时可能把 EVM_RESTART_TTYD 一起抹掉。 */
-		if (!get_login_safe() && (!strcmp(v->name, "ttyd_user") || !strcmp(v->name, "ttyd_pass")))
-			continue;
-#endif
+		/* ★ ttyd 凭据的「仅安全会话可改」限制，原先在这里按变量名特判 —— 因为
+		 * EVM_BLOCK_UNSAFE 是越界的 (1ULL << 65)（UB，实测折成 0 ⇒ 上面那条通用守卫
+		 * 恒不触发）。该宏已改为空闲位 16（见 common.h），通用守卫恢复生效，
+		 * ttyd_user/ttyd_pass 也已在 variables.c 挂上该标记，故此处特判删除。 */
 
 		event_mask = v->event_mask & ~(EVM_BLOCK_UNSAFE);
 		
@@ -2471,7 +2467,24 @@ static int update_action_hook(int eid, webs_t wp, int argc, char **argv)
 	char *up_action = websGetVar(wp, "connect_action", "");
 
 	if (!strcmp(up_action, "bigtmp")) {
-		system("mount -t tmpfs -o remount,rw,size=50M tmpfs /tmp");
+		/* ★ /tmp 尺寸改为可在界面上配。原实现是硬编码
+		 *     mount -t tmpfs -o remount,rw,size=50M tmpfs /tmp
+		 *   产不出别的尺寸，而 dev_init.sh 的规则是 MemTotal >= 160000KB 的机型开机
+		 *   本来就是 50M ⇒ 在 MI-R3G（MemTotal 252940KB）上这个按钮点了等于没点，
+		 *   这正是用户「点击扩大 /tmp 后依然失败」的直接原因。
+		 *
+		 * 现在：页面填多少就存进 nvram 的 tmp_size_mb，再交给 /sbin/tmp_resize.sh
+		 * 统一夹取范围并 remount。为什么走脚本而不是在这里直接 mount —— 开机恢复
+		 * 也要用同一份阈值逻辑，两处各写一套必然演变成「页面填 80M、重启后回落 50M」。
+		 *
+		 * 空值 / 非数字由脚本自行忽略（保持 dev_init.sh 算出的自动值），
+		 * 所以「框里什么都不填就点按钮」= 明确地不改变现状，不会被悄悄改成固定值。 */
+		if (!get_login_safe())
+			return 0;
+
+		nvram_set("tmp_size_mb", websGetVar(wp, "tmp_size_mb", ""));
+		nvram_commit();
+		system("/sbin/tmp_resize.sh");
 	}
 	return 0;
 }

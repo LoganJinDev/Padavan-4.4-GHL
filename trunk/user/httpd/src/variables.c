@@ -231,12 +231,13 @@
 #if defined (APP_TTYD)
 			{"ttyd_enable", "", NULL, EVM_RESTART_TTYD},
 			{"ttyd_port", "", NULL, EVM_RESTART_TTYD},
-			/* ttyd 独立登录凭据。此处刻意不加 EVM_BLOCK_UNSAFE：
-			 * 该宏是 (1ULL << 65)，位移超出 64 位宽度属未定义行为，
-			 * 与 EVM_RESTART_TTYD 做 & ~ 运算可能把重启位一起抹掉，
-			 * 导致改密码后 ttyd 不重启。LAN 限制改在 web_ex.c 里按变量名显式判定。 */
-			{"ttyd_user", "", NULL, EVM_RESTART_TTYD},
-			{"ttyd_pass", "", NULL, EVM_RESTART_TTYD},
+			/* ttyd 独立登录凭据属于持久 root shell 凭据：仅允许 LAN/VPN/HTTPS 会话修改。
+			 * EVM_BLOCK_UNSAFE 已从越界的 (1ULL << 65) 改为空闲位 16（见 common.h），
+			 * 现在真的会生效 ⇒ 通用守卫（web_ex.c 中 `v->event_mask & EVM_BLOCK_UNSAFE`）
+			 * 即可覆盖，无需再按变量名特判。标记位在累积重启掩码前会被 & ~ 掉，
+			 * 所以 EVM_RESTART_TTYD 照常生效。 */
+			{"ttyd_user", "", NULL, EVM_RESTART_TTYD|EVM_BLOCK_UNSAFE},
+			{"ttyd_pass", "", NULL, EVM_RESTART_TTYD|EVM_BLOCK_UNSAFE},
 #endif
 #if defined (APP_VLMCSD)
 			{"vlmcsd_enable", "", NULL, EVM_RESTART_VLMCSD},
@@ -366,6 +367,13 @@
 #if (BOARD_NUM_UPHY_USB3 > 0)
 			{"usb3_disable", "", NULL, EVM_RESTART_REBOOT},
 #endif
+			/* ★ /tmp（tmpfs）的容量上限，单位 MB。由「系统管理 → 固件升级」页的输入框写入，
+			 * 真正生效靠 /sbin/tmp_resize.sh —— 界面点按钮与开机恢复共用同一份阈值逻辑。
+			 * 事件掩码留 0：它只改 tmpfs 的挂载参数，跟任何常驻服务都无关，
+			 * 改它不该触发任何 restart。空值 = 不干预，沿用 dev_init.sh 的自动规则。
+			 * ★ 刻意【不】写进 defaults.c：恢复出厂时该键消失 ⇒ 脚本不动作 ⇒ 回到自动规则，
+			 *   这正是想要的默认行为；再补一行 "" 只是噪音。 */
+			{"tmp_size_mb", "", NULL, 0},
 			{"Storage_UserList", "Group", ARGV((char*)variables_Storage_UserList, "16", "79", "acc_num"), EVM_RESTART_FTPD|EVM_RESTART_SMBD},
 			{0,0,0,0}
 		};
@@ -1104,11 +1112,17 @@
 			/* 下载代理只影响 easytier_download.sh，跟隧道运行态无关 ⇒
 			 * 事件掩码留 0，改它不该把已经跑起来的隧道重启一遍。 */
 			{"easytier_download_proxy", "", NULL, 0},
-			/* 二进制版本。跟 download_proxy 同理：它只决定「下次点下载去取哪个
-			 * 版本」，不改隧道运行态 ⇒ 事件掩码留 0。
+			/* 二进制版本。★ 必须挂 EVM_RESTART_EASYTIER，不能像 download_proxy 那样留 0：
+			 * 换版本 = 换 /tmp/easytier/easytier-core 这个可执行文件，必须让正在跑的隧道
+			 * 停掉重建，否则新版本永不生效。
+			 * ★ 只改掩码还不够 —— httpd 的 validate_asp_apply 对「提交值 == 当前 nvram 值」
+			 *   的变量直接 continue（web_ex.c 里 check NVRAM value is changed 那行），
+			 *   而「下载」按钮已经先把版本号 commit 进 nvram 了，所以用户再点「应用」时
+			 *   这个键根本累积不到掩码。真正的兜底在 easytier.sh 的下载分支里（下完自己
+			 *   重启），这里负责的是「只在下拉框选版本 + 点应用、没点下载」那条路径。
 			 * ★ 空值 = 跟随固件钉死的默认版本 —— 那条路径全程不联网取指纹，
 			 *   与改造前逐字节等价；非空值才走官方 API 取摘要那条路。 */
-			{"easytier_version", "", NULL, 0},
+			{"easytier_version", "", NULL, EVM_RESTART_EASYTIER},
 			{"easytier_dhcp", "", NULL, EVM_RESTART_EASYTIER},
 			{"easytier_latency_first", "", NULL, EVM_RESTART_EASYTIER},
 			{"easytier_disable_ipv6", "", NULL, EVM_RESTART_EASYTIER},
