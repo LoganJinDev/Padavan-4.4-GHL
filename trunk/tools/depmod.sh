@@ -77,8 +77,24 @@ if [ "$CONFIG_FIRMWARE_INCLUDE_ANTFS" = "y" ] ; then
 fi
 
 # call depmod
-if ! $depmod_bin -ae -F System.map -b "${INSTALL_MOD_PATH}" -r ${KERNELRELEASE}; then
-	echo "depmod.sh: ❌ depmod 执行失败: $depmod_bin -ae -F System.map -b ${INSTALL_MOD_PATH} -r ${KERNELRELEASE}" >&2
+#
+# ⚠️ 这里【不能】给 depmod 传 -r：
+#   -r 在旧 kmod 里是「已废弃但保留」的选项，会被忽略并只打一行
+#       depmod: WARNING: Ignored deprecated option -r
+#   而新 kmod 已把它彻底移除，glibc getopt 于是直接拒绝：
+#       /sbin/depmod: invalid option -- 'r'
+#   ⇒ 构建在 _modinst_post 处硬失败：
+#       make[3]: *** [Makefile:1226: _modinst_post] Error 1
+#   实测对照（同一台 GHL、同一个 -r、只换 runner 镜像）：
+#       2026-11-04 noble   : WARNING: Ignored deprecated option -r  ⇒ 忽略后继续，构建成功
+#       2026-11-05 resolute: /sbin/depmod: invalid option -- 'r'    ⇒ 硬失败
+#
+#   去掉它属于【行为等价】的修改：旧 kmod 本来就把 -r 整个忽略掉，版本号是靠【位置参数】生效的。
+#   内核自带的 scripts/depmod.sh:63 也正是
+#       "$DEPMOD" "$@" "$KERNELRELEASE" $SYMBOL_PREFIX
+#   —— 同样不带 -r、同样把版本号放位置参数。这里与它保持一致。
+if ! $depmod_bin -ae -F System.map -b "${INSTALL_MOD_PATH}" "${KERNELRELEASE}"; then
+	echo "depmod.sh: ❌ depmod 执行失败: $depmod_bin -ae -F System.map -b ${INSTALL_MOD_PATH} ${KERNELRELEASE}" >&2
 	exit 1
 fi
 
