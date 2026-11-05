@@ -106,6 +106,14 @@ else
 endif
 export PATH
 
+# CMake 4.x 起移除了对 cmake_minimum_required(VERSION < 3.5) 的兼容层，
+# 而本树里若干上游老包（lzo-2.10 等）声明的正是 < 3.5 ⇒ 在新版 CMake 上必然配置失败。
+# 官方提供的兼容开关同时支持环境变量形式，这里统一导出一次，覆盖全树所有 cmake 调用
+# （既含 include/cmake.mk 的包，也含直接调用 cmake 的 trojan / skipdbv2 等），本地与 CI 行为一致。
+# 用 ?= 便于需要时从命令行或环境覆盖；对已声明 >= 3.5 的包而言它只是下限，无副作用。
+CMAKE_POLICY_VERSION_MINIMUM ?= 3.5
+export CMAKE_POLICY_VERSION_MINIMUM
+
 # === Exported Variables ===
 export \
   VENDOR PRODUCT CONFIG_SHELL HOST_NCPU JOBS CONFIG_WITHOUT_KERNEL \
