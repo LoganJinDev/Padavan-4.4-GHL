@@ -220,8 +220,15 @@ do_upload_file(FILE *stream, int clen, char *bndr, const char *fn, const char *o
 	}
 
 	unlink(fn);
-	if (!(fp = fopen(fn, "w+")))
+	/* ★★ fopen 失败必须留痕。tmpfs 被写满时（例如旧固件 easytier 日志轮转用 mv
+	 *    换掉 inode、把空间锁在「已删除的 inode」里）【这里就是唯一的失败点】，
+	 *    而原实现 goto err 一路静默：用户只看到 UpdateError.asp，syslog 里一行都没有，
+	 *    现场完全无法复盘（2026-11-05 GHL 刷机失败即此形态）。 */
+	if (!(fp = fopen(fn, "w+"))) {
+		httpd_log("%s: cannot create %s (%s) -- free space in /tmp?",
+			"File upload", fn, strerror(errno));
 		goto err;
+	}
 
 	filelen = clen;
 	offset = 0;
@@ -360,8 +367,16 @@ do_upgrade_fw_post(const char *url, FILE *stream, int clen, char *boundary)
 	ret = do_upload_file(stream, clen, NULL, upload_file, "file", check_header_image, sizeof(image_header_t));
 	if (ret == 0) {
 		ret = check_crc_image(upload_file);
-		if (ret != 0)
+		if (ret != 0) {
+			httpd_log("%s: CRC check failed on %s, image rejected",
+				"Firmware update", upload_file);
 			unlink(upload_file);
+		}
+	} else {
+		/* ★ 上传失败同样必须留痕：原先这里直接返回，界面上只剩一句
+		 *   FIRM_fail_desc，日志空白 ⇒ 用户拿不到任何可排查的信息。 */
+		httpd_log("%s: upload failed (see preceding upload error) -- free space in /tmp?",
+			"Firmware update");
 	}
 }
 

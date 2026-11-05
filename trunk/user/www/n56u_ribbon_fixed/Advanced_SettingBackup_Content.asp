@@ -83,6 +83,77 @@ function applyRule(){
 	document.form.submit_fake.click();
 }
 
+// 走 SystemCmd 通道执行一条命令，把回显交给 onDone。
+// ★ 与 Advanced_Console_Content.asp / Advanced_easytier.asp 里那份同构。
+//   本项目惯例是每页各自内联一份，不去改共享的 general.js —— 改共享文件
+//   会波及所有页面，收益不值这个风险。
+// ★ 两段式：POST /apply.cgi 只是把命令【登记】进 sys_script，紧接着的
+//   GET /console_response.asp 才是执行扳机。少了第二段命令永远不会跑，
+//   而且不报任何错。第二段用 complete 不用 success：GET 失败也要回调，
+//   否则调用方永远停在「正在执行…」，一个错误都看不到。
+function rwfs_syscmd(cmd, onDone){
+	$j.ajax({
+		type: "POST",
+		url: "/apply.cgi",
+		data: {
+			action_mode: " SystemCmd ",
+			current_page: "console_response.asp",
+			next_page: "console_response.asp",
+			SystemCmd: cmd
+		},
+		success: function(){
+			$j.ajax({
+				type: "GET",
+				url: "/console_response.asp",
+				dataType: "text",
+				complete: function(xhr){
+					onDone(xhr && xhr.responseText ? $j.trim(xhr.responseText) : "");
+				}
+			});
+		},
+		error: function(){ onDone(""); }
+	});
+}
+
+// 脚本末行给一句机器可读的判决词 rwfs_state=<词>，其余是给人看的。
+function rwfs_show(t){
+	var m = /rwfs_state=([a-z]+)/.exec(t || "");
+	var word = m ? m[1] : "";
+	var map = {
+		mounted:   "已挂载",
+		unmounted: "未挂载（开关已开）",
+		off:       "挂载开关未开",
+		absent:    "本机没有该分区",
+		error:     "失败，详见控制台输出"
+	};
+	$j("#rwfs_state").text(map[word] || (t ? "已执行" : "命令通道无响应"));
+}
+
+function rwfs_status(){
+	$j("#rwfs_state").text("正在读取…");
+	rwfs_syscmd("rwfs2ubi.sh status", rwfs_show);
+}
+
+// ★ 破坏性操作：两道闸门 —— 这里要求输入小写 yes，脚本自己也要求第二个词是 yes。
+function rwfs_format(){
+	var s = prompt("★ 这会【永久抹掉】RWFS 分区上的全部内容，无法恢复。\n\n只在「按上面的选择立即挂载」失败、且状态里说明分区卷表已丢失时才需要这么做。\n\n确认请输入小写 yes，其它任何输入都会取消：");
+	if (s !== "yes") return;
+	$j("#rwfs_state").text("正在重建…");
+	rwfs_syscmd("rwfs2ubi.sh format yes", rwfs_show);
+}
+
+// 按当前下拉框的值当场挂载 / 卸载。
+// ★ 下拉框 onchange 会立刻提交表单把值写进 nvram，所以这里读到的就是用户
+//   刚选的那个值；enable / disable 内部再写一次同样的值，幂等无害。
+function rwfs_apply_now(){
+	var on = $j("#tbl_rwfs select[name='mtd_rwfs_mount_fake']").val() === "1";
+	var hint = on ? "将立即把 RWFS 分区挂载到 /media/mtd_rwfs。\n\n只挂载，不格式化，分区里原有数据不受影响。\n\n继续？"
+				: "将立即卸载 RWFS 分区。\n\n若仍有程序在占用，卸载会失败并保持原状。\n\n继续？";
+	if (!confirm(hint)) return;
+	$j("#rwfs_state").text("正在执行…");
+	rwfs_syscmd("rwfs2ubi.sh " + (on ? "enable" : "disable"), rwfs_show);
+}
+
 function restoreNVRAM(){
 	var alert_string = "<#Setting_factorydefault_hint1#>";
 	if(lan_ipaddr != "192.168.1.1")
@@ -366,6 +437,22 @@ $j.fn.fileName = function() {
                                                     <option value="0" <% nvram_match_x("", "mtd_rwfs_mount", "0", "selected"); %>><#checkbox_No#> (*)</option>
                                                     <option value="1" <% nvram_match_x("", "mtd_rwfs_mount", "1", "selected"); %>>UBIFS</option>
                                                 </select>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th width="50%">立即生效</th>
+                                            <td align="left">
+                                                <input class="btn" type="button" value="按上面的选择立即挂载 / 卸载" onclick="rwfs_apply_now()" />
+                                                <input class="btn" type="button" value="查看状态" onclick="rwfs_status()" style="margin-left: 8px;" />
+                                                <input class="btn" type="button" value="格式化并重建" onclick="rwfs_format()" style="margin-left: 8px;" />
+                                                <span id="rwfs_state" style="margin-left: 12px; color: #888;"></span>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td colspan="2" style="color:#888;">
+                                                上面的下拉框只写 nvram 设置，<b>重启后</b>才由 rc 执行挂载；右边这个按钮按当前下拉框的值当场执行，不用重启。<br>
+                                                本操作只做挂载 / 卸载，<b>不会格式化分区</b>，分区里原有数据不受影响。卸载失败（仍有程序占用）时会保持原状并提示。
+                                                只有在挂载失败、且状态提示分区卷表已丢失时，才需要用右边的「格式化并重建」—— <b>那会永久抹掉分区里的全部内容</b>，需要输入 yes 才会执行。
                                             </td>
                                         </tr>
                                     </table>

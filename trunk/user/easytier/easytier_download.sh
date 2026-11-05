@@ -80,6 +80,35 @@ ET_CLI=$ET_DIR/easytier-cli
 ET_STAGE=/tmp/easytier_dl
 ET_LOG=/tmp/easytier.log
 
+# ★★ 二进制落点探测：优先用掉电不丢的持久分区，否则回落到 tmpfs。
+#   动机：/tmp 是 tmpfs，重启即清空，连安装记录 installed.sha256 一起没 ⇒
+#   每次开机都要重新下载约 8.9 MiB。而带 RWFS 分区的大闪存机型（MI-R3G
+#   37 MiB / MI-R3P 117 MiB）本来就有一块 UBIFS 可用 —— Entware 就跑在
+#   那上面，从它执行程序是本固件支持的设计。RWFS 在 firmware 分区之外，
+#   刷机不会清掉它。
+#   判据三条，缺一不可：
+#     ① /proc/mounts 里确实挂着 —— 目录存在 ≠ 挂着。挂载由 rc 在开机时按
+#        nvram mtd_rwfs_mount 做；没挂上时写进去的东西重启就没了。
+#     ② 可写 —— UBIFS 挂载后也可能因闪存错误变只读。
+#     ③ 剩余 ≥ 20 MiB —— 载荷约 8.9 MiB，留一倍余量，免得装到一半 ENOSPC。
+#   任何一条不满足就静默回落 /tmp：探测失败不该让功能不可用。
+#   ★ 本段与 easytier.sh 里的同名段落必须逐字节相同（两个脚本互不 source，
+#     常量是各自复制的）。改一处务必同步改另一处。
+ET_PERSIST_MP=/media/mtd_rwfs
+ET_PERSIST_MIN_KB=20480
+if grep -qs " $ET_PERSIST_MP " /proc/mounts \
+   && [ -w "$ET_PERSIST_MP" ]; then
+	_et_avail=$(df -k "$ET_PERSIST_MP" 2>/dev/null | awk 'NR==2 {print $4}')
+	case "$_et_avail" in
+	''|*[!0-9]*) _et_avail=0 ;;
+	esac
+	if [ "$_et_avail" -ge "$ET_PERSIST_MIN_KB" ]; then
+		ET_DIR="$ET_PERSIST_MP/easytier"
+		ET_CORE=$ET_DIR/easytier-core
+		ET_CLI=$ET_DIR/easytier-cli
+	fi
+fi
+
 # 大闪存机型编进固件的那一份。★ 用来区分「校验的对象是内置的还是 /tmp 的」——
 # 内置那份的指纹随固件钉死，与用户选的版本无关。
 ET_SYS_CORE=/usr/bin/easytier-core
@@ -504,8 +533,24 @@ et_need_download() {
 	#   的用法，而 et_resolve_bins 本来就优先 /tmp，下到 /tmp 即生效，
 	#   不需要也不应该去动 /usr/bin。
 	if [ -x "$ET_SYS_CORE" ] && [ "$_ver" = "$ET_DEF_VER" ]; then
-		echo "固件已内置二进制，且未指定其他版本，无需下载"
-		return 1
+		# ★★ 还必须确认 /tmp 里【没有】压着一份别的版本的覆盖。
+		#   这条判据原先漏了，于是「选回固件内置版本」被静默误判成「无需下载」：
+		#   et_resolve_bins（easytier.sh）永远优先 /tmp，只要 /tmp 还压着一份，
+		#   内置那份就用不上 ⇒ 点「下载」什么都不做，状态页却报
+		#   「二进制校验不通过，可能下载不完整」（真因是版本不一致，不是损坏），
+		#   用户只能重启路由器（tmpfs 清空 /tmp）才切得回来。
+		#   2026-11-05 MI-R3G 实测：selver=v2.6.4 / curver=v2.6.3 / needdl rc=1；
+		#   check /tmp → FAIL「已安装 v2.6.3，与选中的 v2.6.4 不一致」；
+		#   check /usr/bin → OK ⇒ 内置那份本身是好的，只等 /tmp 让路。
+		# ★ 用 -x 与 et_resolve_bins 的判据对齐：不可执行的文件它本来就不认，
+		#   那种情况下内置那份已经在生效，不该再触发回落。
+		if [ ! -x "$ET_CORE" ] && [ ! -x "$ET_CLI" ]; then
+			echo "固件已内置二进制，且未指定其他版本，无需下载"
+			return 1
+		fi
+		# 有覆盖 ⇒ 需要动作（不下载，由 et_download 走「回落内置」分支）。
+		# ★ 返回值语义不变：仍然只有「需要动作=0 / 不需要=1」两种，调用方无需改。
+		return 0
 	fi
 	return 0
 }
@@ -643,17 +688,47 @@ et_install_stage() {
 	return 0
 }
 
+# 回落到固件内置二进制：把 /tmp 里那份【别的版本】的覆盖连同安装记录一起删掉。
+# ★ 为什么连安装记录一起删：et_paths_ok 先看记录（② 分支）、没有记录才回落到
+#   固件常量（③ 分支）。记录留着而文件没了，状态页会走到「文件与安装记录不符」
+#   这种更糟的措辞上；一起删掉才是「本机没有 /tmp 安装」这个干净状态。
+# ★ 只删这三个精确路径，绝不 rm -rf 整个 ET_DIR：那目录里还有版本列表缓存等
+#   无害文件，而 /tmp 是 1777 世界可写，路径越精确越好。
+# ★ 删除正在运行中的二进制是安全的：Linux 下 unlink 只摘目录项，进程持有的
+#   inode 直到退出才释放；下一次启动自然换用内置那份。
+et_fallback_builtin() {
+	_old="${1:-未知}"
+	rm -f "$ET_CORE" "$ET_CLI" "$ET_VER_STATE"
+	et_log "已清除 /tmp 覆盖（原版本 $_old），回落到固件内置版本 $ET_DEF_VER"
+	return 0
+}
+
 et_download() {
 	# ★ 只问一次并把原因收下来 —— et_need_download 内部要算两个二进制的 sha256
 	#   （6.7 MiB + 2.7 MiB，设备上要好几秒），问两遍等于白算一遍。
 	if _nd=$(et_need_download); then
-		: # 需要下载，继续往下走
+		: # 需要动作，继续往下走
 	else
 		et_log "$_nd"
 		return 0
 	fi
 
 	_ver=$(et_sel_ver)
+
+	# ★★ 选中的就是固件内置版本、而 /tmp 里还压着一份别的版本的覆盖 ⇒
+	#   不需要下载，只要把覆盖拿掉，内置那份立刻生效。三条理由：
+	#   ① 省一次 8.94 MiB 下载 + 9 MiB tmpfs（R3G 的 /tmp 只有 50M，刷机要 40 MiB）
+	#   ② 语义上「切回内置版本」本来就该用内置那份，而不是再下一份压进 /tmp
+	#   ③ 下载的 v2.6.4 与内置的 v2.6.4 字节完全相同（et_install_stage 对默认
+	#      版本就是用固件常量 ET_CORE_SHA256 校验的）⇒ 没有任何功能损失
+	#   ★ 判定条件与 et_need_download 里那道闸门是同一个命题，必须成对维护。
+	if [ -x "$ET_SYS_CORE" ] && [ "$_ver" = "$ET_DEF_VER" ] \
+	   && { [ -x "$ET_CORE" ] || [ -x "$ET_CLI" ]; }; then
+		_st_old="未知"
+		if et_read_state; then _st_old="$_ST_VER"; fi
+		et_fallback_builtin "$_st_old"
+		return 0
+	fi
 	_zipname="easytier-linux-${ET_ARCH}-${_ver}.zip"
 	_zipurl="https://github.com/EasyTier/EasyTier/releases/download/${_ver}/${_zipname}"
 

@@ -38,7 +38,36 @@ ET_DIR=/tmp/easytier
 ET_CORE=$ET_DIR/easytier-core
 ET_CLI=$ET_DIR/easytier-cli
 
-# 大闪存机型把二进制编进固件，落在 /usr/bin；小闪存机型下载到 /tmp/easytier。
+# ★★ 二进制落点探测：优先用掉电不丢的持久分区，否则回落到 tmpfs。
+#   动机：/tmp 是 tmpfs，重启即清空，连安装记录 installed.sha256 一起没 ⇒
+#   每次开机都要重新下载约 8.9 MiB。而带 RWFS 分区的大闪存机型（MI-R3G
+#   37 MiB / MI-R3P 117 MiB）本来就有一块 UBIFS 可用 —— Entware 就跑在
+#   那上面，从它执行程序是本固件支持的设计。RWFS 在 firmware 分区之外，
+#   刷机不会清掉它。
+#   判据三条，缺一不可：
+#     ① /proc/mounts 里确实挂着 —— 目录存在 ≠ 挂着。挂载由 rc 在开机时按
+#        nvram mtd_rwfs_mount 做；没挂上时写进去的东西重启就没了。
+#     ② 可写 —— UBIFS 挂载后也可能因闪存错误变只读。
+#     ③ 剩余 ≥ 20 MiB —— 载荷约 8.9 MiB，留一倍余量，免得装到一半 ENOSPC。
+#   任何一条不满足就静默回落 /tmp：探测失败不该让功能不可用。
+#   ★ 本段与 easytier.sh 里的同名段落必须逐字节相同（两个脚本互不 source，
+#     常量是各自复制的）。改一处务必同步改另一处。
+ET_PERSIST_MP=/media/mtd_rwfs
+ET_PERSIST_MIN_KB=20480
+if grep -qs " $ET_PERSIST_MP " /proc/mounts \
+   && [ -w "$ET_PERSIST_MP" ]; then
+	_et_avail=$(df -k "$ET_PERSIST_MP" 2>/dev/null | awk 'NR==2 {print $4}')
+	case "$_et_avail" in
+	''|*[!0-9]*) _et_avail=0 ;;
+	esac
+	if [ "$_et_avail" -ge "$ET_PERSIST_MIN_KB" ]; then
+		ET_DIR="$ET_PERSIST_MP/easytier"
+		ET_CORE=$ET_DIR/easytier-core
+		ET_CLI=$ET_DIR/easytier-cli
+	fi
+fi
+
+# 大闪存机型把二进制编进固件，落在 /usr/bin；下载的那份落在 $ET_DIR（见上）。
 # ET_CORE / ET_CLI 由 et_resolve_bins() 按实际存在情况改写。
 ET_SYS_CORE=/usr/bin/easytier-core
 ET_SYS_CLI=/usr/bin/easytier-cli
@@ -868,7 +897,7 @@ easytier_dl() {
 		fi
 	) &
 
-	et_state_echo "已开始后台下载（约 8.9 MiB），完成后点「刷新状态」"
+	et_state_echo "已开始处理，完成后点「刷新状态」"
 }
 
 # 供界面「刷新状态」按钮调用：算一遍二进制完整性，回显【单行】。

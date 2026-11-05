@@ -29,7 +29,20 @@ struct nvram_pair router_defaults[] = {
 	{ "nvram_manual", "0" },		/* Manual commit mode: 1: manual, 0: auto */
 
 #if defined (USE_NAND_FLASH)
-	{ "mtd_rwfs_mount", "0" },		/* Allow mount MTD RWFS partition on boot */
+	/* 默认开启：大闪存机型（MI-R3G / MI-R3P）出厂就带一块独立于固件的
+	 * RWFS 分区，掉电与刷机都不丢。挂上它，像 EasyTier 二进制这种重启后
+	 * 仍需存在的文件就有地方放，不必每次开机重下。
+	 * ★ 别以为「挂不上也无所谓」。真机上这块分区可能是一块【卷表（layout
+	 *   volume）已丢失的 UBI 镜像】—— 内核 attach 直接报
+	 *   ubi_read_volume_table: the layout volume was not found / error -22，
+	 *   结构上无法附加，只能重建，而重建会永久抹掉分区里的内容。
+	 *   rc 的挂载函数（common_ex.c:658）只做 mount，不写任何东西；
+	 *   若 0 号卷不存在，由 autostart.sh 里的 rwfs2ubi.sh ensure 自动建卷
+	 *   补齐（空卷由 UBIFS 在挂载时自动格式化，见 fs/ubifs/sb.c:542）。
+	 * ★ 注意：这个键一旦被写过就会一直存在，改默认值只影响「键不存在」的
+	 *   新设备；老设备需要一次显式 set（界面「启用持久存储」或命令行）。
+	 */
+	{ "mtd_rwfs_mount", "1" },		/* Allow mount MTD RWFS partition on boot */
 #endif
 
 	/* Miscellaneous parameters */

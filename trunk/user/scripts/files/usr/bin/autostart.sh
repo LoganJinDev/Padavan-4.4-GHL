@@ -14,6 +14,17 @@ if [ -x /sbin/tmp_resize.sh ]; then
 	/sbin/tmp_resize.sh
 fi
 
+# RWFS 持久分区：按 nvram 开关幂等补挂一次。
+# ★ 为什么要有这一道：rc 里那次挂载跑得很早（rc.c:721），任何一环没成就不会
+#   重试；而带 RWFS 的机型（MI-R3G / MI-R3P）正是靠它把重启后会丢的文件
+#   （例如 EasyTier 二进制）留在掉电不丢的地方。
+# ★ 只挂载，绝不格式化 —— 分区里可能有原厂留下的数据。
+# ★ 幂等：已经挂上、开关没开、本机没有这个分区，三种情况都是几十毫秒直接返回。
+# ★ 小闪存机型（GHL）固件里根本没有这个脚本，[ -x ] 直接挡掉。
+if [ -x /sbin/rwfs2ubi.sh ]; then
+	/sbin/rwfs2ubi.sh ensure >/dev/null 2>&1
+fi
+
 mkdir -p /tmp/dnsmasq.dom
 logger -t "防止 DNSmasq 启动失败，创建/tmp/dnsmasq.dom/"
 

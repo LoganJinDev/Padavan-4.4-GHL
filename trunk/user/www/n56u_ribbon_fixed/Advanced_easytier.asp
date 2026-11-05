@@ -119,6 +119,46 @@ function et_syscmd(cmd, onDone){
 	});
 }
 
+// 持久存储（RWFS）：只挂载，绝不格式化。
+// ★ 脚本末行给一句机器可读的判决词 rwfs_state=<词>，其余是给人看的。
+//   这里只拿判决词做一句中文结论，完整回显原样落到详情框 —— 不解析 HTML，
+//   回显里有路径，一律当纯文本。
+function et_rwfs_show(t){
+	var m = /rwfs_state=([a-z]+)/.exec(t || "");
+	var word = m ? m[1] : "";
+	var map = {
+		mounted:   "已挂载",
+		unmounted: "未挂载（开关已开）",
+		off:       "挂载开关未开",
+		absent:    "本机没有该分区",
+		error:     "失败，详见下方输出"
+	};
+	$j("#et_rwfs_state").text(map[word] || (t ? "已执行" : "命令通道无响应"));
+	$j("#et_info_out").val(t || "(无输出)");
+}
+
+function et_rwfs_enable(){
+	// ★ 把「不格式化」写在确认框里：用户对「启用存储」这类按钮的默认预期
+	//   就是「会不会清掉我的东西」，不写清楚他会不敢点。
+	if (!confirm("将把 RWFS 分区挂载到 /media/mtd_rwfs，并把 EasyTier 二进制改放到那上面。\n\n本操作只挂载，不会格式化，分区里原有的数据不受影响。\n\n继续？")) return;
+	$j("#et_rwfs_state").text("正在启用…");
+	et_syscmd("rwfs2ubi.sh enable", et_rwfs_show);
+}
+
+function et_rwfs_status(){
+	$j("#et_rwfs_state").text("正在读取…");
+	et_syscmd("rwfs2ubi.sh status", et_rwfs_show);
+}
+
+// ★ 破坏性操作：只在「启用持久存储」失败、且状态说明分区卷表已丢失时才需要。
+//   两道闸门 —— 这里要求输入小写 yes，脚本自己也要求第二个词是 yes。
+function et_rwfs_format(){
+	var s = prompt("★ 这会【永久抹掉】RWFS 分区上的全部内容，无法恢复。\n\n只在「启用持久存储」失败、且状态里说明分区卷表已丢失时才需要这么做。\n\n确认请输入小写 yes，其它任何输入都会取消：");
+	if (s !== "yes") return;
+	$j("#et_rwfs_state").text("正在重建…");
+	et_syscmd("rwfs2ubi.sh format yes", et_rwfs_show);
+}
+
 // 把回显写进二进制状态格（单行）。
 function et_bin_state_show(t){
 	$j("#et_bin_state").text(t || "命令通道无响应");
@@ -632,6 +672,17 @@ function et_ver_list(){
 					<div style="margin-top: 6px; color: #888;">★ 仍未移植 OpenWrt 版的「自己上传二进制」：那要放开任意文件，就只能退回「跑一下 -h、看输出里有没有 easytier 字样」这种格式探测，等于把校验降级成猜测 —— 故不移植。</div>
 				</td>
 
+										</tr>
+										<tr>
+										<th>持久存储（RWFS / UBIFS）<br>
+											<span style="color:#888; font-weight:normal;">大闪存机型（MI-R3G / MI-R3P）出厂带一块独立于固件的分区，掉电和刷机都不丢。把 EasyTier 二进制放上去，重启后不必重新下载 8.9 MiB。<b>本操作只挂载，绝不格式化</b>，分区里原有的数据不受影响。</span></th>
+										<td>
+					<input class="btn" type="button" value="启用持久存储" onclick="et_rwfs_enable()" />
+					<input class="btn" type="button" value="查看状态" onclick="et_rwfs_status()" style="margin-left: 8px;" />
+					<input class="btn" type="button" value="格式化并重建" onclick="et_rwfs_format()" style="margin-left: 8px;" />
+					<span id="et_rwfs_state" style="margin-left: 12px; color: #888;"></span>
+					<div style="margin-top: 6px; color: #888;">启用后需重启（或重新点一次「下载 / 校验二进制」）才会把二进制搬到新落点。</div>
+				</td>
 										</tr>
 										<tr>
 										<th>连接信息 / 二进制详情（只读；走本机查询，不影响隧道）</th>
