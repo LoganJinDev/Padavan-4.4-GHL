@@ -123,9 +123,12 @@ function et_syscmd(cmd, onDone){
 // ★ 脚本末行给一句机器可读的判决词 rwfs_state=<词>，其余是给人看的。
 //   这里只拿判决词做一句中文结论，完整回显原样落到详情框 —— 不解析 HTML，
 //   回显里有路径，一律当纯文本。
+var et_rwfs_mib = 0;
 function et_rwfs_show(t){
 	var m = /rwfs_state=([a-z]+)/.exec(t || "");
 	var word = m ? m[1] : "";
+	var sz = /rwfs_size_mib=([0-9]+)/.exec(t || "");
+	if (sz) et_rwfs_mib = parseInt(sz[1], 10) || 0;
 	var map = {
 		mounted:   "已挂载",
 		unmounted: "未挂载（开关已开）",
@@ -134,6 +137,11 @@ function et_rwfs_show(t){
 		error:     "失败，详见下方输出"
 	};
 	$j("#et_rwfs_state").text(map[word] || (t ? "已执行" : "命令通道无响应"));
+	// ★ 破坏性按钮平时不显示 —— 只有真卡在「附加失败 / 卷表丢失」时才露出来。
+	//   两条判据：判决词是 error，或脚本给了 rwfs_rebuild=1。
+	//   ★ 只判 error 不够：status 在 R3G 那种机器上给的是 unmounted。
+	var need = (word === "error") || /rwfs_rebuild=1/.test(t || "");
+	$j("#et_rwfs_format_btn").css("display", need ? "" : "none");
 	$j("#et_info_out").val(t || "(无输出)");
 }
 
@@ -151,12 +159,13 @@ function et_rwfs_status(){
 }
 
 // ★ 破坏性操作：只在「启用持久存储」失败、且状态说明分区卷表已丢失时才需要。
-//   两道闸门 —— 这里要求输入小写 yes，脚本自己也要求第二个词是 yes。
+//   两道闸门 —— 这里要求输入小写 ERASE，脚本自己也要求第二个词是 ERASE。
 function et_rwfs_format(){
-	var s = prompt("★ 这会【永久抹掉】RWFS 分区上的全部内容，无法恢复。\n\n只在「启用持久存储」失败、且状态里说明分区卷表已丢失时才需要这么做。\n\n确认请输入小写 yes，其它任何输入都会取消：");
-	if (s !== "yes") return;
+	var cap = et_rwfs_mib > 0 ? "（约 " + et_rwfs_mib + " MiB）" : "";
+	var s = prompt("★ 这会【永久抹掉】RWFS 分区上的全部内容" + cap + "，无法恢复。\n\n只在「启用持久存储」失败、且状态里说明分区结构已损坏时才需要这么做。\n\n确认请输入大写 ERASE（区分大小写），其它任何输入都会取消：");
+	if (s !== "ERASE") return;
 	$j("#et_rwfs_state").text("正在重建…");
-	et_syscmd("rwfs2ubi.sh format yes", et_rwfs_show);
+	et_syscmd("rwfs2ubi.sh format ERASE", et_rwfs_show);
 }
 
 // 把回显写进二进制状态格（单行）。
@@ -679,7 +688,7 @@ function et_ver_list(){
 										<td>
 					<input class="btn" type="button" value="启用持久存储" onclick="et_rwfs_enable()" />
 					<input class="btn" type="button" value="查看状态" onclick="et_rwfs_status()" style="margin-left: 8px;" />
-					<input class="btn" type="button" value="格式化并重建" onclick="et_rwfs_format()" style="margin-left: 8px;" />
+					<input class="btn" type="button" id="et_rwfs_format_btn" value="格式化并重建" onclick="et_rwfs_format()" style="margin-left: 8px; display:none;" />
 					<span id="et_rwfs_state" style="margin-left: 12px; color: #888;"></span>
 					<div style="margin-top: 6px; color: #888;">启用后需重启（或重新点一次「下载 / 校验二进制」）才会把二进制搬到新落点。</div>
 				</td>

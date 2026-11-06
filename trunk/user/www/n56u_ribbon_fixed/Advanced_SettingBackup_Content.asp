@@ -116,9 +116,12 @@ function rwfs_syscmd(cmd, onDone){
 }
 
 // 脚本末行给一句机器可读的判决词 rwfs_state=<词>，其余是给人看的。
+var rwfs_mib = 0;
 function rwfs_show(t){
 	var m = /rwfs_state=([a-z]+)/.exec(t || "");
 	var word = m ? m[1] : "";
+	var sz = /rwfs_size_mib=([0-9]+)/.exec(t || "");
+	if (sz) rwfs_mib = parseInt(sz[1], 10) || 0;
 	var map = {
 		mounted:   "已挂载",
 		unmounted: "未挂载（开关已开）",
@@ -127,6 +130,11 @@ function rwfs_show(t){
 		error:     "失败，详见控制台输出"
 	};
 	$j("#rwfs_state").text(map[word] || (t ? "已执行" : "命令通道无响应"));
+	// ★ 破坏性按钮平时不显示 —— 只有真卡在「附加失败 / 卷表丢失」时才露出来。
+	//   两条判据：判决词是 error，或脚本给了 rwfs_rebuild=1。
+	//   ★ 只判 error 不够：status 在 R3G 那种机器上给的是 unmounted。
+	var need = (word === "error") || /rwfs_rebuild=1/.test(t || "");
+	$j("#rwfs_format_btn").css("display", need ? "" : "none");
 }
 
 function rwfs_status(){
@@ -134,12 +142,13 @@ function rwfs_status(){
 	rwfs_syscmd("rwfs2ubi.sh status", rwfs_show);
 }
 
-// ★ 破坏性操作：两道闸门 —— 这里要求输入小写 yes，脚本自己也要求第二个词是 yes。
+// ★ 破坏性操作：两道闸门 —— 这里要求输入小写 ERASE，脚本自己也要求第二个词是 ERASE。
 function rwfs_format(){
-	var s = prompt("★ 这会【永久抹掉】RWFS 分区上的全部内容，无法恢复。\n\n只在「按上面的选择立即挂载」失败、且状态里说明分区卷表已丢失时才需要这么做。\n\n确认请输入小写 yes，其它任何输入都会取消：");
-	if (s !== "yes") return;
+	var cap = rwfs_mib > 0 ? "（约 " + rwfs_mib + " MiB）" : "";
+	var s = prompt("★ 这会【永久抹掉】RWFS 分区上的全部内容" + cap + "，无法恢复。\n\n只在「按上面的选择立即挂载」失败、且状态里说明分区结构已损坏时才需要这么做。\n\n确认请输入大写 ERASE（区分大小写），其它任何输入都会取消：");
+	if (s !== "ERASE") return;
 	$j("#rwfs_state").text("正在重建…");
-	rwfs_syscmd("rwfs2ubi.sh format yes", rwfs_show);
+	rwfs_syscmd("rwfs2ubi.sh format ERASE", rwfs_show);
 }
 
 // 按当前下拉框的值当场挂载 / 卸载。
@@ -444,7 +453,7 @@ $j.fn.fileName = function() {
                                             <td align="left">
                                                 <input class="btn" type="button" value="按上面的选择立即挂载 / 卸载" onclick="rwfs_apply_now()" />
                                                 <input class="btn" type="button" value="查看状态" onclick="rwfs_status()" style="margin-left: 8px;" />
-                                                <input class="btn" type="button" value="格式化并重建" onclick="rwfs_format()" style="margin-left: 8px;" />
+                                                <input class="btn" type="button" id="rwfs_format_btn" value="格式化并重建" onclick="rwfs_format()" style="margin-left: 8px; display:none;" />
                                                 <span id="rwfs_state" style="margin-left: 12px; color: #888;"></span>
                                             </td>
                                         </tr>
@@ -452,7 +461,8 @@ $j.fn.fileName = function() {
                                             <td colspan="2" style="color:#888;">
                                                 上面的下拉框只写 nvram 设置，<b>重启后</b>才由 rc 执行挂载；右边这个按钮按当前下拉框的值当场执行，不用重启。<br>
                                                 本操作只做挂载 / 卸载，<b>不会格式化分区</b>，分区里原有数据不受影响。卸载失败（仍有程序占用）时会保持原状并提示。
-                                                只有在挂载失败、且状态提示分区卷表已丢失时，才需要用右边的「格式化并重建」—— <b>那会永久抹掉分区里的全部内容</b>，需要输入 yes 才会执行。
+                                                只有在挂载失败、且状态提示分区结构已损坏时，才需要用「格式化并重建」—— <b>那会永久抹掉分区里的全部内容</b>，需要手动输入大写 ERASE 才会执行。<br>
+                                                该按钮平时不显示，只有自动挂载失败、重建成为唯一出路时才会出现在上面。
                                             </td>
                                         </tr>
                                     </table>

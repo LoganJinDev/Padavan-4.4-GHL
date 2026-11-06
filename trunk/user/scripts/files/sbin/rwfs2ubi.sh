@@ -8,9 +8,14 @@
 #   rwfs2ubi.sh ensure       按 nvram 开关幂等挂载。只挂，不写 nvram，绝不格式化。
 #   rwfs2ubi.sh enable       打开开关（nvram mtd_rwfs_mount=1）并当场挂载
 #   rwfs2ubi.sh disable      卸载并关掉开关
-#   rwfs2ubi.sh format yes   ★破坏性★ 擦除整块并重建 UBI 卷（第二个词必须是 yes）
+#   rwfs2ubi.sh format ERASE ★破坏性★ 擦除整块并重建 UBI 卷（第二个词必须是 ERASE）
 #
 # rwfs_state 的取值：mounted / unmounted / off / absent / error
+# 另外两句机器可读的旁证 —— 界面靠它们决定要不要露出「格式化并重建」按钮：
+#   rwfs_size_mib=<N>   分区容量（MiB）。给确认框报「将抹掉多少」，这才叫知情同意。
+#   rwfs_rebuild=1      只在「挂载失败 / 分区卷表已丢失」时出现 ⇒ 重建是唯一出路。
+#     ★ 为什么不能只判 rwfs_state=error：status 在本机（R3G）走的是 else 分支、
+#       吐的是 unmounted 而不是 error，光看判决词会让按钮在最需要它的机器上不出现。
 #
 # ★★ 为什么「无参数」从「格式化」改成「挂载」
 #   旧版无参数时会无条件执行 mtd_write erase。而真机（MI-R3G）上这块 RWFS 是
@@ -32,7 +37,7 @@
 #     zerotier.nft，Padavan 不用 luci），且镜像 lnum=386 > 本分区 296 个 PEB
 #     ⇒ 当初是写给更大的分区的，几何一变卷表就废了。
 #   ⇒ 但「要不要抹掉」是用户的决定，不是脚本的。所以默认路径只挂载；重建必须
-#     由一个显式动词触发（format + 第二个词 yes + 界面上输入 yes 的二次确认）。
+#     由一个显式动词触发（format + 第二个词 ERASE + 界面上输入 ERASE 的二次确认）。
 #
 # ★ 空卷为什么能用（本设计不依赖 mkfs.ubifs —— 本固件里根本没有它）
 #   ubimkvol 建出来的卷没有任何已映射的 LEB ⇒ mount_ubifs() 里
@@ -46,7 +51,7 @@
 #   - format 先卸再擦：还挂着就拒绝，绝不隔着挂载点去擦底层设备。
 #   - ★ 刻意【不做】「分区非空就拒绝格式化」这种守卫：用户点格式化，正是因为
 #     分区里有东西。一个总在响的守卫等于没有守卫。真正的闸门是
-#     「显式动词 format + 第二个词 yes + 界面上的二次确认」这三道。
+#     「显式动词 format + 第二个词 ERASE + 界面上的二次确认」这三道。
 #
 # ★ 与 rc 里 mount_rwfs_partition()（rc/src/common_ex.c:658）的分工
 #   rc 在开机时按同一个 nvram 键挂一次；本脚本是它的幂等补丁。rc 那次失败
@@ -125,6 +130,8 @@ rwfs_make_node() {
 
 do_mount_now() {
 	rwfs_mounted && return 0
+	# ★ 给界面报容量：确认框里写「将抹掉约 N MiB」才是知情同意。
+	[ -n "$RWFS_SIZE" ] && echo "rwfs_size_mib=$((RWFS_SIZE / 1048576))"
 
 	# ubi 在本机是内建的（CONFIG_MTD_UBI=y，内建模块不产 .ko，modprobe 必然
 	# 失败）。所以先看 /sys，只有真不在才尝试加载，且失败不算错。
@@ -134,6 +141,7 @@ do_mount_now() {
 
 	if ! rwfs_attached; then
 		echo "rwfs_state=error"
+		echo "rwfs_rebuild=1"
 		# ★ 两种失败必须分开说 —— 出路完全不同。判据就是分区头的幻数。
 		if rwfs_magic_is_ubi; then
 			echo "附加失败：分区上是合法的 UBI 镜像，但它的卷表（layout volume）已丢失，"
@@ -144,7 +152,7 @@ do_mount_now() {
 			echo "附加失败：分区头不是 UBI 幻数，说明它从没格式化过（或内容是别的格式）。"
 			echo "★ 这种情况重建不会损失任何数据。"
 		fi
-		echo "确认后显式执行：rwfs2ubi.sh format yes"
+		echo "确认后显式执行：rwfs2ubi.sh format ERASE"
 		return 1
 	fi
 
@@ -163,8 +171,9 @@ do_mount_now() {
 		ubimkvol "/dev/ubi$RWFS_IDX" -m -N rwfs >/dev/null 2>&1
 		if ! rwfs_has_vol; then
 			echo "rwfs_state=error"
+			echo "rwfs_rebuild=1"
 			echo "UBI 已附加，但 0 号卷缺失且自动创建失败。"
-			echo "要重建，请显式执行：rwfs2ubi.sh format yes"
+			echo "要重建，请显式执行：rwfs2ubi.sh format ERASE"
 			return 1
 		fi
 	fi
@@ -180,8 +189,9 @@ do_mount_now() {
 	fi
 
 	echo "rwfs_state=error"
+	echo "rwfs_rebuild=1"
 	echo "挂载失败：/dev/ubi${RWFS_IDX}_0 存在，但内核拒绝了 UBIFS 挂载。"
-	echo "要擦除并重建，请显式执行：rwfs2ubi.sh format yes"
+	echo "要擦除并重建，请显式执行：rwfs2ubi.sh format ERASE"
 	return 1
 }
 do_ensure() {
@@ -231,6 +241,7 @@ do_status() {
 	fi
 
 	echo "分区      : 存在（mtd$RWFS_IDX，$((RWFS_SIZE / 1024)) KiB，擦除块 $((RWFS_ERASE / 1024)) KiB）"
+	echo "rwfs_size_mib=$((RWFS_SIZE / 1048576))"
 	if [ "$(nvram get $NVRAM_KEY)" = "1" ]; then
 		echo "挂载开关  : 开"
 	else
@@ -241,6 +252,9 @@ do_status() {
 	if ! rwfs_attached; then
 		if rwfs_magic_is_ubi; then
 			echo "分区内容  : 合法 UBI 但卷表已丢失 ⇒ 重建会毁掉里面约 $((RWFS_SIZE / 1048576)) MiB 内容"
+			# ★ 只在开关已开时才说「重建是唯一出路」：开关关着的话，用户该做的是
+			#   先打开开关，而不是抹掉分区。
+			[ "$(nvram get $NVRAM_KEY)" = "1" ] && echo "rwfs_rebuild=1"
 		else
 			echo "分区内容  : 非 UBI（空白或其它格式）⇒ 重建不损失数据"
 		fi
@@ -266,8 +280,8 @@ do_status() {
 }
 
 do_format() {
-	[ "$1" = "yes" ] || die "格式化会【擦除整块 RWFS 上的全部数据】。
-确认要这么做，请显式执行：rwfs2ubi.sh format yes"
+	[ "$1" = "ERASE" ] || die "格式化会【擦除整块 RWFS 上的全部数据】。
+确认要这么做，请显式执行：rwfs2ubi.sh format ERASE"
 
 	# ★ 用 type 而不是 command -v：本机 BusyBox 没有 command -v（rc=127），
 	#   写成 [ ! command -v X ] 会恒假，守卫静默失效。
@@ -311,7 +325,7 @@ case "$1" in
 	disable)  do_disable ;;
 	format)   do_format "$2" ;;
 	*)
-		echo "用法：rwfs2ubi.sh [status|ensure|enable|disable|format yes]" >&2
+		echo "用法：rwfs2ubi.sh [status|ensure|enable|disable|format ERASE]" >&2
 		echo "无参数 = ensure（幂等挂载，绝不格式化）。" >&2
 		exit 1
 		;;
