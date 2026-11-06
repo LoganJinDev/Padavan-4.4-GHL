@@ -70,6 +70,7 @@ showhide_div('zelink', found_app_zerotier());
 showhide_div('ddlink', found_app_ddnsto());
 showhide_div('wilink', found_app_wireguard());
 showhide_div('frlink', found_app_frp());
+showhide_div('et_rwfs_row', support_mtd_rwfs());
 }
 
 function applyRule(){
@@ -136,7 +137,7 @@ function et_rwfs_show(t){
 		absent:    "本机没有该分区",
 		error:     "失败，详见下方输出"
 	};
-	$j("#et_rwfs_state").text(map[word] || (t ? "已执行" : "命令通道无响应"));
+	$j("#et_rwfs_state").text(map[word] || (t ? "命令返回了无法识别的输出（本机可能没有该分区）" : "命令通道无响应"));
 	// ★ 破坏性按钮平时不显示 —— 只有真卡在「附加失败 / 卷表丢失」时才露出来。
 	//   两条判据：判决词是 error，或脚本给了 rwfs_rebuild=1。
 	//   ★ 只判 error 不够：status 在 R3G 那种机器上给的是 unmounted。
@@ -682,7 +683,7 @@ function et_ver_list(){
 				</td>
 
 										</tr>
-										<tr>
+										<tr id="et_rwfs_row" style="display:none">
 										<th>持久存储（RWFS / UBIFS）<br>
 											<span style="color:#888; font-weight:normal;">大闪存机型（MI-R3G / MI-R3P）出厂带一块独立于固件的分区，掉电和刷机都不丢。把 EasyTier 二进制放上去，重启后不必重新下载 8.9 MiB。<b>本操作只挂载，绝不格式化</b>，分区里原有的数据不受影响。</span></th>
 										<td>

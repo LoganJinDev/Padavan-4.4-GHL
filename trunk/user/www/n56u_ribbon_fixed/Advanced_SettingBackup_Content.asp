@@ -129,7 +129,7 @@ function rwfs_show(t){
 		absent:    "本机没有该分区",
 		error:     "失败，详见控制台输出"
 	};
-	$j("#rwfs_state").text(map[word] || (t ? "已执行" : "命令通道无响应"));
+	$j("#rwfs_state").text(map[word] || (t ? "命令返回了无法识别的输出（本机可能没有该分区）" : "命令通道无响应"));
 	// ★ 破坏性按钮平时不显示 —— 只有真卡在「附加失败 / 卷表丢失」时才露出来。
 	//   两条判据：判决词是 error，或脚本给了 rwfs_rebuild=1。
 	//   ★ 只判 error 不够：status 在 R3G 那种机器上给的是 unmounted。
